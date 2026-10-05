@@ -276,6 +276,10 @@ select.termsel { width: auto; }
 /* locked-css */
 .btn.locked,.btn.locked:hover{background:#b7bcc4 !important;border-color:#b7bcc4 !important;color:#fff !important;cursor:not-allowed;opacity:1;box-shadow:none;}
 .statusbtn:disabled{opacity:.55;cursor:not-allowed;}
+/* rbac-css */
+.ss{position:relative}.ss-input{width:100%}.ss-list{position:absolute;z-index:900;left:0;right:0;max-height:230px;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 26px rgba(0,0,0,.18);margin-top:2px}.ss-opt{padding:7px 10px;font-size:13px;cursor:pointer}.ss-opt:hover{background:var(--cream)}.ss-grp{padding:5px 10px;font-size:10.5px;font-weight:700;color:var(--grey);text-transform:uppercase;letter-spacing:.06em;background:#fafafa}
+.badge{display:inline-block;padding:2px 9px;border-radius:6px;font-size:11px;font-weight:600;margin:1px 3px 1px 0}.b-rank{background:#E8EEF8;color:#16345E}.b-por{background:#F6E9EB;color:#7A1F2B}.b-dept{background:#EEF3EA;color:#2E6B3E}.b-role{background:#FBF3DD;color:#8a6d1f}
+.matrix td,.matrix th{text-align:center;font-size:11.5px;padding:6px 5px}.matrix td:first-child,.matrix th:first-child{text-align:left;position:sticky;left:0;background:#fff}
 </style>
 </head>
 <body>
@@ -361,7 +365,7 @@ const SUPABASE_URL = 'https://oztbsxsyirfnxtqhimsw.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96dGJzeHN5aXJmbnh0cWhpbXN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA1MjE2MTAsImV4cCI6MjEwNjA5NzYxMH0.u8-pAaqSo8t12oYFdlMlJGTeu5gRnCApKogwRjvCzPo';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r10'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r12'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -516,39 +520,7 @@ async function loadMyProfile(userId){
   }
   return data;
 }
-function rebuildRolesFromSettings(){
-  ROLE_LABELS = Object.assign({}, DEFAULT_ROLE_LABELS);
-  Object.entries((SETTINGS_CACHE && SETTINGS_CACHE.custom_roles) || {}).forEach(([key, def]) => {
-    ROLE_LABELS[key] = def.label;
-  });
-}
-function permissionsFor(role){
-  const overrides = (SETTINGS_CACHE && SETTINGS_CACHE.role_overrides) || {};
-  if (overrides[role] && overrides[role].length) return overrides[role];
-  if (DEFAULT_PERMISSIONS[role]) return DEFAULT_PERMISSIONS[role];
-  const customRoles = (SETTINGS_CACHE && SETTINGS_CACHE.custom_roles) || {};
-  if (customRoles[role]) return (customRoles[role].tabs && customRoles[role].tabs.length) ? customRoles[role].tabs : ['dashboard'];
-  return ['dashboard'];
-}
-function can(tab){
-  if (tab === 'myAttendance') return true; // every signed-in person can check themselves in
-  const role = MY_PROFILE?.role;
-  if (role === 'admin' || role === 'headofschool') return true;
-  return permissionsFor(role).includes(tab);
-}
-function isScopedRole(){ return MY_PROFILE && MY_PROFILE.role !== 'admin' && MY_PROFILE.role !== 'headofschool'; }
-function myAssignedClasses(){
-  const c = MY_PROFILE?.classes_assigned;
-  return (c && c.length) ? c : null; // null = unrestricted (either admin/HoS, or no classes set yet)
-}
-function canAccessClass(classId){
-  if (!isScopedRole()) return true;
-  const assigned = myAssignedClasses();
-  return !assigned || assigned.includes(classId);
-}
-function visibleClasses(){
-  return (isScopedRole() && myAssignedClasses()) ? CLASSES.filter(c => myAssignedClasses().includes(c.id)) : CLASSES;
-}
+// Roles, permissions and class scope now live in js_part17 (loadMyAccess / hasPerm / can / visibleClasses).
 
 async function onSignedIn(user){
   CURRENT_USER = user;
@@ -561,8 +533,8 @@ async function onSignedIn(user){
     return;
   }
   MY_PROFILE = profile;
-  await loadSettings(); // needed before can() so role permissions (built-in or custom) resolve correctly from the first render
-  rebuildRolesFromSettings();
+  await loadSettings();
+  await loadMyAccess(); // real permissions from the database (falls back to the old rules if the upgrade is not installed)
   document.getElementById('signInGate').classList.add('hidden');
   document.getElementById('app').style.display = '';
   document.getElementById('whoAmI').textContent = profile.name + ' — ' + (ROLE_LABELS[profile.role] || profile.role);
@@ -570,6 +542,7 @@ async function onSignedIn(user){
   if (!can(CUR_TAB)) CUR_TAB = 'dashboard';
   render();
   showWelcomeIfNeeded();
+  if (ACCESS_MODE === 'rbac') sb.rpc('apply_due_promotions').then(() => {}, () => {}); // approved promotions whose date has arrived
 }
 
 async function boot(){
@@ -606,6 +579,7 @@ const NAV_GROUPS = [
   ]},
   { label: 'People', items: [
     ['guardians','&#128106;','Parents/Guardians'], ['admissions','&#128214;','Admissions'],
+    ['career','&#127891;','Career & Ranks'], ['por','&#127894;','Positions of Responsibility'],
   ]},
   { label: 'Operations', items: [
     ['staffLeave','&#128203;','Staff Leave & Cover'], ['expenses','&#128181;','Expenses'],
@@ -617,7 +591,7 @@ const NAV_GROUPS = [
     ['documents','&#128218;','School Documents'], ['communications','&#128172;','Parent Communication'],
   ]},
   { label: 'Governance', items: [
-    ['auditLog','&#128220;','Audit Log'], ['reports','&#128196;','Reports'], ['settings','&#9881;','Settings'],
+    ['rolesPerms','&#128273;','Roles & Permissions'], ['auditLog','&#128220;','Audit Log'], ['reports','&#128196;','Reports'], ['settings','&#9881;','Settings'],
   ]},
 ];
 const TITLES = {
@@ -627,6 +601,9 @@ const TITLES = {
   attendance: ['Students Attendance', 'Take and review daily class attendance'],
   staffAttendance: ['Staff Attendance', 'Clock staff in/out and track lateness'],
   myAttendance: ['My Attendance', 'Check in and out — time and location are recorded automatically'],
+  career: ['Career & Ranks', 'Official career framework, appointments and promotions'],
+  por: ['Positions of Responsibility', 'Leadership duties, appointments and allowances'],
+  rolesPerms: ['Roles & Permissions', 'Who can do what — roles, temporary access and the permission matrix'],
   results: ['Results', 'Enter scores and print report cards'],
   fees: ['Fees', 'Track fee collection and outstanding balances'],
   receipts: ['Receipts', 'Every payment recorded, with a printable receipt'],
@@ -659,7 +636,7 @@ function renderNav(){
     ).join('');
   }).join('');
   el.querySelectorAll('.navbtn').forEach(btn => {
-    btn.addEventListener('click', () => { CUR_TAB = btn.dataset.tab; openStudentId = null; closeSidebar(); render(); });
+    btn.addEventListener('click', () => { CUR_TAB = btn.dataset.tab; openStudentId = null; openStaffProfileId = null; closeSidebar(); render(); });
   });
 }
 
@@ -677,7 +654,10 @@ async function renderTabAsync(){
   try {
     if (CUR_TAB === 'dashboard') c.innerHTML = await renderDashboard();
     else if (CUR_TAB === 'students') c.innerHTML = openStudentId ? await renderStudentDetail() : await renderStudents();
-    else if (CUR_TAB === 'staff') c.innerHTML = await renderStaff();
+    else if (CUR_TAB === 'staff') c.innerHTML = openStaffProfileId ? await renderStaffProfile() : await renderStaff();
+    else if (CUR_TAB === 'career') c.innerHTML = await renderCareer();
+    else if (CUR_TAB === 'por') c.innerHTML = await renderPor();
+    else if (CUR_TAB === 'rolesPerms') c.innerHTML = await renderRolesPerms();
     else if (CUR_TAB === 'attendance') c.innerHTML = await renderAttendance();
     else if (CUR_TAB === 'staffAttendance') c.innerHTML = await renderStaffAttendance();
     else if (CUR_TAB === 'myAttendance') c.innerHTML = await renderMyAttendance();
@@ -751,7 +731,7 @@ async function renderDashboard(){
   (recentAbs||[]).forEach(r => { absCount[r.student_id] = (absCount[r.student_id]||0)+1; });
   const flagged = Object.entries(absCount).filter(([,n])=>n>=3).map(([id,n])=>({ s: (students||[]).find(x=>x.id===id), n })).filter(x=>x.s && isActiveStudent(x.s)).sort((a,b)=>b.n-a.n);
 
-  const isAdminView = MY_PROFILE?.role === 'admin' || MY_PROFILE?.role === 'headofschool';
+  const isAdminView = ACCESS_MODE === 'rbac' ? hasPerm('view_management_dashboard') : legacyIsAdmin();
   let mgmtRow = '';
   if (isAdminView) {
     const { data: disciplineToday } = await sb.from('discipline').select('id').eq('date', today);
@@ -791,11 +771,11 @@ async function renderDashboard(){
   </div>
   <div class="kpis">
     <div class="kpi"><div class="label">Active Students</div><div class="value">${active.length}</div><div class="note">${bySection.Nursery} Nursery/PN · ${bySection.Primary} Primary · ${bySection.Secondary} JSS · ${byGender.Male||0}M / ${byGender.Female||0}F</div></div>
-    <div class="kpi"><div class="label">Active Staff</div><div class="value">${activeStaff.length}</div><div class="note">${(staff||[]).length - activeStaff.length} inactive/exited</div></div>
+    ${hasPerm('view_staff') ? `<div class="kpi"><div class="label">Active Staff</div><div class="value">${activeStaff.length}</div><div class="note">${(staff||[]).length - activeStaff.length} inactive/exited</div></div>` : ''}
     <div class="kpi"><div class="label">Students Present Today</div><div class="value" style="color:var(--ok);">${present}</div><div class="note">${absent} absent · ${late} late · of ${marked}/${active.length} marked</div></div>
-    <div class="kpi"><div class="label">Staff Present Today</div><div class="value" style="color:var(--ok);">${staffPresent}</div><div class="note">${staffAbsent} absent · ${staffLate} late · of ${staffMarked}/${activeStaff.length} marked</div></div>
+    ${hasPerm('view_staff_attendance') ? `<div class="kpi"><div class="label">Staff Present Today</div><div class="value" style="color:var(--ok);">${staffPresent}</div><div class="note">${staffAbsent} absent · ${staffLate} late · of ${staffMarked}/${activeStaff.length} marked</div></div>` : ''}
   </div>
-  ${term ? `
+  ${term && hasPerm('view_fees') ? `
   <div class="panel">
     <h2>Fees This Term — ${esc(term)}</h2>
     <div class="row between" style="margin-bottom:8px;">
@@ -839,23 +819,13 @@ async function fetchStudents(){
 }
 async function nextStudentId(){
   const year = new Date().getFullYear();
-  const { data } = await sb.from('settings').select('id_counters').eq('id', 1).maybeSingle();
-  const counters = (data && data.id_counters) || {};
-  const key = 'studentId_' + year;
-  const next = (counters[key] || 0) + 1;
-  counters[key] = next;
-  await sb.from('settings').update({ id_counters: counters }).eq('id', 1);
-  return `SHS/${year}/${String(next).padStart(3,'0')}`;
+  const n = await bumpCounter('studentId_' + year);
+  return `SHS/${year}/${String(n).padStart(3,'0')}`;
 }
 async function nextAdmissionFormNumber(){
   const year = new Date().getFullYear();
-  const { data } = await sb.from('settings').select('id_counters').eq('id', 1).maybeSingle();
-  const counters = (data && data.id_counters) || {};
-  const key = 'admissionForm_' + year;
-  const next = (counters[key] || 0) + 1;
-  counters[key] = next;
-  await sb.from('settings').update({ id_counters: counters }).eq('id', 1);
-  return `SS/ADM/${year}/${String(next).padStart(3,'0')}`;
+  const n = await bumpCounter('admissionForm_' + year);
+  return `SS/ADM/${year}/${String(n).padStart(3,'0')}`;
 }
 
 async function renderStudents(){
@@ -880,14 +850,14 @@ async function renderStudents(){
           <input placeholder="Search by name…" value="${esc(studentFilter.q)}" oninput="studentFilter.q=this.value;renderTabAsync();" style="width:200px;">
         </div>
       </div>
-      ${!scoped ? `<div class="row"><button class="btn" onclick="openStudentForm()">+ Add Student</button><button class="btn secondary" onclick="openImportModal()">&#8613; Import</button>${!isScopedRole() ? `<button class="btn secondary" onclick="openBulkMove()">Move selected (<span id="selCount">${selectedStudentIds.size}</span>)</button><button class="btn maroon" onclick="openPromotionWizard()">Promote / Move Classes</button>` : ''}</div>` : ''}
+      ${hasPerm('create_student') ? `<div class="row"><button class="btn" onclick="openStudentForm()">+ Add Student</button><button class="btn secondary" onclick="openImportModal()">&#8613; Import</button>${hasPerm('promote_students') ? `<button class="btn secondary" onclick="openBulkMove()">Move selected (<span id="selCount">${selectedStudentIds.size}</span>)</button><button class="btn maroon" onclick="openPromotionWizard()">Promote / Move Classes</button>` : ''}</div>` : ''}
     </div>
     ${rows.length === 0 ? `<div class="empty"><div class="big">&#128100;</div>No students match.</div>` : `
     <div class="tablewrap"><table>
-      <tr>${!isScopedRole() ? '<th style="width:28px;"><input type="checkbox" style="width:auto;" onclick="event.stopPropagation();selectAllStudents(this.checked)"></th>' : ''}<th>Name</th><th>Student ID</th><th>Class</th><th>Gender</th><th>Parent Phone</th><th>Status</th><th></th></tr>
+      <tr>${hasPerm('promote_students') ? '<th style="width:28px;"><input type="checkbox" style="width:auto;" onclick="event.stopPropagation();selectAllStudents(this.checked)"></th>' : ''}<th>Name</th><th>Student ID</th><th>Class</th><th>Gender</th><th>Parent Phone</th><th>Status</th><th></th></tr>
       ${rows.map(s => `
         <tr class="clickable" onclick="openStudent('${s.id}')">
-          ${!isScopedRole() ? `<td onclick="event.stopPropagation()"><input type="checkbox" class="stu_sel_cb" style="width:auto;" ${selectedStudentIds.has(s.id)?'checked':''} onchange="toggleSelectStudent('${s.id}',this.checked)"></td>` : ''}
+          ${hasPerm('promote_students') ? `<td onclick="event.stopPropagation()"><input type="checkbox" class="stu_sel_cb" style="width:auto;" ${selectedStudentIds.has(s.id)?'checked':''} onchange="toggleSelectStudent('${s.id}',this.checked)"></td>` : ''}
           <td><strong>${esc(s.name)}</strong></td>
           <td class="mono">${esc(s.student_id||'—')}</td>
           <td>${classById(s.class_id)?.name || '—'}</td>
@@ -919,7 +889,7 @@ async function renderStudentDetail(){
       <div class="row">
         <button class="btn secondary small" onclick='openStudentForm(${JSON.stringify(s).replace(/'/g,"&apos;")})'>Edit</button>
         <button class="btn ghost small" onclick="printIdCard('student','${s.id}')">ID Card</button>
-        ${!isScopedRole() ? `<button class="btn ghost small" onclick="reissueIdCard('student','${s.id}')">Reissue ID</button>` : ''}
+        ${hasPerm('promote_students') ? `<button class="btn ghost small" onclick="reissueIdCard('student','${s.id}')">Reissue ID</button>` : ''}
         <button class="btn maroon small" onclick="printReportCard('${s.id}')">Report Card</button>
       </div>
     </div>
@@ -1134,164 +1104,12 @@ async function confirmImport(){
 // =====================================================================
 // STAFF
 // =====================================================================
-let staffFilter = { q: '' };
 
 async function fetchStaff(){
   const { data, error } = await sb.from('staff').select('*').order('name');
   if (error) { toast('Could not load staff: ' + error.message); return []; }
   return data || [];
 }
-async function nextStaffId(){
-  const { data } = await sb.from('settings').select('id_counters').eq('id', 1).maybeSingle();
-  const counters = (data && data.id_counters) || {};
-  const next = (counters['staffId'] || 0) + 1;
-  counters['staffId'] = next;
-  await sb.from('settings').update({ id_counters: counters }).eq('id', 1);
-  return `SHS/STF/${String(next).padStart(3,'0')}`;
-}
-
-async function renderStaff(){
-  let rows = await fetchStaff();
-  rows = rows.filter(s => !staffFilter.q || (s.name||'').toLowerCase().includes(staffFilter.q.toLowerCase()));
-  return `
-  <div class="panel">
-    <div class="row between" style="margin-bottom:14px;">
-      <div class="searchbox"><span class="sic">&#128269;</span><input placeholder="Search staff…" value="${esc(staffFilter.q)}" oninput="staffFilter.q=this.value;renderTabAsync();" style="width:220px;"></div>
-      <div class="row">
-        <button class="btn" onclick="openStaffForm()">+ Add Staff</button>
-        <button class="btn secondary" onclick="openStaffImportModal()">&#8613; Import CSV/Excel</button>
-      </div>
-    </div>
-    ${rows.length===0 ? `<div class="empty"><div class="big">&#128100;</div>No staff records yet.</div>` : `
-    <div class="tablewrap"><table>
-      <tr><th>Staff ID</th><th>Name</th><th>Position</th><th>Department</th><th>Phone</th><th>Status</th><th></th></tr>
-      ${rows.map(s => `
-        <tr>
-          <td class="mono">${esc(s.staff_id||'—')}</td>
-          <td><strong>${esc(s.name)}</strong></td>
-          <td>${esc(s.role||'—')}</td>
-          <td>${esc(s.department||'—')}</td>
-          <td>${esc(s.phone||'—')}</td>
-          <td>${staffStatusPill(s.status)}</td>
-          <td class="right"><button class="iconbtn" onclick="printIdCard('staff','${s.id}')">ID Card</button> <button class="iconbtn" onclick="reissueIdCard('staff','${s.id}')">Reissue</button> <button class="iconbtn" onclick='openStaffForm(${JSON.stringify(s).replace(/'/g,"&apos;")})'>Edit</button></td>
-        </tr>`).join('')}
-    </table></div>`}
-  </div>`;
-}
-async function openStaffForm(existing){
-  const s = existing || {};
-  const suggestedId = existing ? '' : await nextStaffId();
-  openModal(`
-    <h3>${existing?'Edit Staff':'Add Staff'}</h3>
-    <div class="row" style="align-items:flex-start;gap:14px;margin-bottom:10px;">
-      <div>
-        <img id="st_photo_preview" src="${s.photo_url||''}" style="width:78px;height:90px;object-fit:cover;border-radius:6px;border:1px solid var(--line);background:var(--cream);display:${s.photo_url?'block':'none'};">
-        <div id="st_photo_placeholder" style="width:78px;height:90px;border-radius:6px;border:1px dashed var(--line);display:${s.photo_url?'none':'flex'};align-items:center;justify-content:center;color:var(--grey);font-size:11px;text-align:center;">No photo</div>
-      </div>
-      <div style="flex:1;">
-        <div class="field"><label>Passport Photograph</label><input type="file" id="st_photo" accept="image/*" onchange="previewPhoto('st_photo','st_photo_preview','st_photo_placeholder')"></div>
-      </div>
-    </div>
-    <div class="fgrid">
-      <div class="field"><label>Full Name *</label><input id="st_name" value="${esc(s.name||'')}"></div>
-      <div class="field"><label>Staff ID</label><input id="st_staffid" value="${esc(s.staff_id || suggestedId)}"></div>
-    </div>
-    <div class="fgrid">
-      <div class="field"><label>Position</label><input id="st_role" value="${esc(s.role||'')}" placeholder="e.g. Class Teacher, Bursar"></div>
-      <div class="field"><label>Department</label><input id="st_department" value="${esc(s.department||'')}"></div>
-    </div>
-    <div class="field"><label>Subjects Taught</label><input id="st_subjects" value="${esc(s.subjects_taught||'')}"></div>
-    <div class="field"><label>Classes Assigned</label>
-      <div class="tablewrap" style="max-height:140px;overflow-y:auto;border:1px solid var(--line);border-radius:7px;padding:8px 12px;">
-        ${CLASSES.map(c => `<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 10px 3px 0;font-size:12.5px;"><input type="checkbox" class="st_class_cb" value="${c.id}" ${(s.classes_assigned||[]).includes(c.id)?'checked':''} style="width:auto;">${c.name}</label>`).join('')}
-      </div>
-    </div>
-    <div class="fgrid">
-      <div class="field"><label>Phone</label><input id="st_phone" value="${esc(s.phone||'')}"></div>
-      <div class="field"><label>Email</label><input id="st_email" value="${esc(s.email||'')}"></div>
-    </div>
-    <div class="fgrid">
-      <div class="field"><label>Date Employed</label><input id="st_joined" type="date" value="${s.date_joined||''}"></div>
-      <div class="field"><label>Qualification</label><input id="st_qualification" value="${esc(s.qualification||'')}"></div>
-    </div>
-    <div class="field"><label>Address</label><input id="st_address" value="${esc(s.address||'')}"></div>
-    <div class="fgrid">
-      <div class="field"><label>Emergency Contact Name</label><input id="st_emname" value="${esc(s.emergency_contact_name||'')}"></div>
-      <div class="field"><label>Relationship to Staff</label><input id="st_emrel" list="st_rel_list" value="${esc(s.emergency_contact_relationship||'')}" placeholder="e.g. Spouse, Mother, Brother">
-        <datalist id="st_rel_list"><option value="Spouse"><option value="Father"><option value="Mother"><option value="Son"><option value="Daughter"><option value="Brother"><option value="Sister"><option value="Uncle"><option value="Aunt"><option value="Guardian"><option value="Friend"><option value="Other Relative"></datalist></div>
-    </div>
-    <div class="field" style="max-width:300px;"><label>Emergency Contact Phone</label><input id="st_emphone" value="${esc(s.emergency_contact_phone||'')}"></div>
-    <div class="field"><label>Documents on File (note)</label><input id="st_documents" value="${esc(s.documents_note||'')}" placeholder="e.g. Certificates, NIN slip, guarantor form"></div>
-    <h3 style="font-size:14px;margin:14px 0 8px;">Financial Details <span style="font-weight:400;color:var(--grey);">(payroll — entered once, used automatically on the Salary tab)</span></h3>
-    <div class="fgrid">
-      <div class="field"><label>Bank Name</label><input id="st_bank" value="${esc(s.bank_name||'')}"></div>
-      <div class="field"><label>Account Number</label><input id="st_account" value="${esc(s.account_number||'')}"></div>
-    </div>
-    <div class="field" style="max-width:300px;"><label>Agreed Monthly Salary (₦)</label><input id="st_salary" type="number" value="${s.monthly_salary??''}"></div>
-    <div class="fgrid">
-      <div class="field"><label>Employment Status</label><select id="st_emptype"><option value="" ${!s.employment_type?'selected':''}>—</option><option ${s.employment_type==='Full-time'?'selected':''}>Full-time</option><option ${s.employment_type==='Part-time'?'selected':''}>Part-time</option><option ${s.employment_type==='Contract'?'selected':''}>Contract</option></select></div>
-      <div class="field"><label>Record Status</label><select id="st_status">${STAFF_STATUSES.map(v=>`<option value="${v}" ${(s.status||'active')===v?'selected':''}>${STAFF_STATUS_LABELS[v]}</option>`).join('')}</select></div>
-    </div>
-    <div id="staffSaveStatus" class="desc"></div>
-    <div class="mfoot">
-      <button class="btn secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn" id="staffSaveBtn" onclick="saveStaff(${existing?`'${existing.id}'`:'null'})">Save Staff</button>
-    </div>
-  `, true);
-}
-async function saveStaff(existingId){
-  const btn = document.getElementById('staffSaveBtn');
-  const statusEl = document.getElementById('staffSaveStatus');
-  const name = document.getElementById('st_name').value.trim();
-  if (!name) { toast('Please enter a name.'); return; }
-  const classesAssigned = Array.from(document.querySelectorAll('.st_class_cb:checked')).map(el=>el.value);
-  const data = {
-    name, staff_id: document.getElementById('st_staffid').value.trim() || null,
-    role: document.getElementById('st_role').value.trim(),
-    department: document.getElementById('st_department').value.trim(),
-    subjects_taught: document.getElementById('st_subjects').value.trim(),
-    classes_assigned: classesAssigned,
-    phone: document.getElementById('st_phone').value.trim(),
-    email: document.getElementById('st_email').value.trim(),
-    date_joined: document.getElementById('st_joined').value || null,
-    qualification: document.getElementById('st_qualification').value.trim(),
-    employment_type: document.getElementById('st_emptype').value,
-    status: document.getElementById('st_status').value,
-    address: document.getElementById('st_address').value.trim(),
-    emergency_contact_name: document.getElementById('st_emname').value.trim(),
-    emergency_contact_phone: document.getElementById('st_emphone').value.trim(),
-    emergency_contact_relationship: document.getElementById('st_emrel').value.trim(),
-    documents_note: document.getElementById('st_documents').value.trim(),
-    bank_name: document.getElementById('st_bank').value.trim(),
-    account_number: document.getElementById('st_account').value.trim(),
-    monthly_salary: document.getElementById('st_salary').value === '' ? null : Number(document.getElementById('st_salary').value),
-  };
-  if (existingId) {
-    const { data: prev } = await sb.from('staff').select('status,staff_id').eq('id', existingId).maybeSingle();
-    if (prev && prev.status && prev.status !== 'active' && data.status === 'active') {
-      const label = STAFF_STATUS_LABELS[prev.status] || prev.status;
-      if (!confirm(`This staff record is marked "${label}" and carries Staff ID ${prev.staff_id||''}. Reactivating reuses that same ID.\n\nIf this person is genuinely REJOINING after leaving, best practice is to create a brand-new Staff record with a new ID and leave this one as history.\n\nOK = reactivate this SAME record anyway. Cancel = stop.`)) return;
-    }
-  }
-  const photoFile = document.getElementById('st_photo').files[0];
-  btn.disabled = true; statusEl.textContent = 'Saving…';
-  try {
-    if (photoFile) {
-      statusEl.textContent = 'Uploading photo…';
-      data.photo_url = await uploadPhoto(photoFile, 'staff');
-    }
-    let res;
-    if (existingId) res = await sb.from('staff').update(data).eq('id', existingId);
-    else res = await sb.from('staff').insert(data);
-    if (res.error) throw res.error;
-    await logAudit(existingId?'update':'create', 'staff', existingId||data.staff_id, { name: data.name });
-    closeModal(); toast('Staff record saved.'); renderTabAsync();
-  } catch(e) {
-    btn.disabled = false;
-    statusEl.textContent = /duplicate key/.test(e.message) ? 'That Staff ID is already taken.' : 'Could not save: ' + e.message;
-  }
-}
-
 // ---------- CSV/Excel import ----------
 let STAFF_IMPORT_ROWS = [];
 function openStaffImportModal(){
@@ -1341,16 +1159,6 @@ function renderStaffImportPreview(){
   const btn = document.getElementById('staffImportConfirmBtn');
   btn.disabled = validCount === 0; btn.textContent = `Import ${validCount} Staff`;
 }
-async function confirmStaffImport(){
-  const validRows = STAFF_IMPORT_ROWS.filter(r=>r.valid);
-  let imported = 0;
-  for (const r of validRows) {
-    const staffId = await nextStaffId();
-    const { error } = await sb.from('staff').insert({ name: r.name, role: r.role, department: r.department, phone: r.phone, email: r.email, bank_name: r.bank, account_number: r.account, monthly_salary: r.salary, status: 'active', staff_id: staffId });
-    if (!error) imported++;
-  }
-  closeModal(); toast(`Imported ${imported} staff member(s).`); renderTabAsync();
-}
 
 
 let ATT_LOCKED = false; // true once the day's register has been submitted
@@ -1390,7 +1198,7 @@ async function renderAttendance(){
       <input type="date" value="${attState.date}" onchange="attState.date=this.value;renderTabAsync();">
       <span class="desc" style="margin:0;">${ATT_ROSTER.length} pupil(s) in ${cls.name} &nbsp;·&nbsp; Marked <span id="attMarkedCount">${markedCount}/${ATT_ROSTER.length}</span></span>
     </div>
-    ${submission ? `<div class="bignote" style="margin-bottom:14px;">Submitted by <strong>${esc(submission.submitted_by||'Unknown')}</strong> at ${new Date(submission.submitted_at).toLocaleString()}. This register is now <strong>locked</strong> — no further changes today.${!isScopedRole() ? ' <button class="btn small ghost" onclick="unlockRegister()">Unlock for correction (Admin)</button>' : ''}</div>` : ''}
+    ${submission ? `<div class="bignote" style="margin-bottom:14px;">Submitted by <strong>${esc(submission.submitted_by||'Unknown')}</strong> at ${new Date(submission.submitted_at).toLocaleString()}. This register is now <strong>locked</strong> — no further changes today.${hasPerm('edit_attendance') ? ' <button class="btn small ghost" onclick="unlockRegister()">Unlock for correction (Admin)</button>' : ''}</div>` : ''}
     ${ATT_ROSTER.length === 0 ? `<div class="empty">No active pupils in this class yet.</div>` : `
     <div class="tablewrap"><table>
       <tr><th>Name</th><th>Adm. No.</th><th class="center">Status</th><th>Time marked</th><th>Reason (if A/L)</th><th>Notes</th><th></th></tr>
@@ -1547,7 +1355,6 @@ function getSubjects(section){
 }
 async function renderSettingsTab(){
   await loadSettings();
-  rebuildRolesFromSettings();
   const { data: profiles } = await sb.from('profiles').select('*').order('name');
   return `
   <div class="panel">
@@ -1573,36 +1380,7 @@ async function renderSettingsTab(){
     </div>
     <div id="subjectListContainer">${renderSubjectEditor(settingsSubjSection)}</div>
   </div>
-  <div class="panel">
-    <h2>Roles &amp; Access</h2>
-    <div class="desc">Exactly which tabs each role can see — enforced for real by the database's own security rules, not just hidden in the menu.</div>
-    <div class="tablewrap"><table>
-      <tr><th>Role</th><th>Sees</th><th></th></tr>
-      ${Object.keys(DEFAULT_ROLE_LABELS).map(key => `<tr>
-        <td><strong>${esc(ROLE_LABELS[key])}</strong> ${SETTINGS_CACHE.role_overrides&&SETTINGS_CACHE.role_overrides[key]?'<span class="pill warn">Customised</span>':''}</td>
-        <td>${permissionsFor(key).map(t=>esc(TITLES[t]?TITLES[t][0]:t)).join(', ')}</td>
-        <td class="right"><button class="iconbtn" onclick="openRolePermissionsEditor('${key}')">Edit Access</button></td>
-      </tr>`).join('')}
-    </table></div>
-    ${Object.keys(SETTINGS_CACHE.custom_roles||{}).length ? `
-    <h3 style="font-size:14px;margin:18px 0 8px;">Custom Roles</h3>
-    <div class="tablewrap"><table>
-      <tr><th>Role</th><th>Sees</th><th></th></tr>
-      ${Object.entries(SETTINGS_CACHE.custom_roles).map(([key,def]) => `<tr>
-        <td><strong>${esc(def.label)}</strong></td>
-        <td>${(def.tabs||[]).map(t=>esc(TITLES[t]?TITLES[t][0]:t)).join(', ')||'Dashboard only'}</td>
-        <td class="right"><button class="iconbtn" onclick="openRolePermissionsEditor('${key}')">Edit Access</button> <button class="iconbtn" onclick="removeCustomRole('${key}')">Remove</button></td>
-      </tr>`).join('')}
-    </table></div>` : ''}
-    <h3 style="font-size:14px;margin:18px 0 8px;">Add a Custom Role</h3>
-    <div class="field" style="max-width:320px;"><label>Role Name</label><input id="newRoleName" placeholder="e.g. Exam Officer"></div>
-    <div class="field"><label>Tabs this role can see</label>
-      <div class="tablewrap" style="max-height:160px;overflow-y:auto;border:1px solid var(--line);border-radius:7px;padding:8px 12px;">
-        ${CORE_TABS.map(t => `<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 10px 3px 0;font-size:12.5px;"><input type="checkbox" class="newrole_tab_cb" value="${t}" style="width:auto;">${esc(TITLES[t]?TITLES[t][0]:t)}</label>`).join('')}
-      </div>
-    </div>
-    <button class="btn small" onclick="addCustomRole()">+ Add Role</button>
-  </div>
+  ${renderBackupPanel()}
   <div class="panel">
     <h2>Staff Logins</h2>
     <div class="desc">Everyone who has a login, and which role they're assigned.</div>
@@ -1627,80 +1405,9 @@ async function renderSettingsTab(){
     <h2>About this system</h2>
     <div class="bignote">
       <strong>App version: ${APP_BUILD_VERSION}</strong> — if you report a bug and a fix is made, this number should change after you reload.<br><br>
-      Hosted on your own Supabase database and (once deployed) your own Vercel address — no subscription, fully yours. Access control here is enforced by the database itself, not just the menu — a real security boundary, not a convenience.
+      Hosted on your own Supabase database and (once deployed) your own Vercel address — no subscription, fully yours. Access to the data is enforced by the database for the four built-in roles (Admin, Head of School, Bursar, Teacher). Custom roles control the menu only.
     </div>
   </div>`;
-}
-function openRolePermissionsEditor(key){
-  const isBuiltIn = !!DEFAULT_ROLE_LABELS[key];
-  const currentTabs = permissionsFor(key);
-  openModal(`
-    <h3>Edit Access — ${esc(ROLE_LABELS[key])}</h3>
-    <div class="msub">${isBuiltIn ? 'Built-in role — you can change what it sees, but not remove it.' : 'Custom role.'}</div>
-    <div class="row" style="margin-bottom:10px;">
-      <button class="linklike" onclick="document.querySelectorAll('.roleperm_cb').forEach(c=>c.checked=true);">Select all</button>
-      <button class="linklike" onclick="document.querySelectorAll('.roleperm_cb').forEach(c=>c.checked=false);">Select none</button>
-    </div>
-    <div class="tablewrap" style="max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:7px;padding:8px 12px;">
-      ${CORE_TABS.map(t => `<label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;"><input type="checkbox" class="roleperm_cb" value="${t}" ${currentTabs.includes(t)?'checked':''}>${esc(TITLES[t]?TITLES[t][0]:t)}</label>`).join('')}
-    </div>
-    ${key==='admin' ? `<div class="bignote" style="margin-top:10px;">Settings will always stay available to Admin, even if unchecked, so you can never lock yourself out.</div>` : ''}
-    <div class="mfoot">
-      <button class="btn secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn" onclick="saveRolePermissions('${key}')">Save</button>
-    </div>
-  `);
-}
-async function saveRolePermissions(key){
-  let tabs = Array.from(document.querySelectorAll('.roleperm_cb:checked')).map(el=>el.value);
-  if (tabs.length === 0) { toast('Choose at least one tab.'); return; }
-  if (key === 'admin' && !tabs.includes('settings')) tabs = [...tabs, 'settings'];
-  try {
-    if (DEFAULT_ROLE_LABELS[key]) {
-      const overrides = Object.assign({}, SETTINGS_CACHE.role_overrides || {}, { [key]: tabs });
-      const { error } = await sb.from('settings').update({ role_overrides: overrides }).eq('id', 1);
-      if (error) throw error;
-      SETTINGS_CACHE.role_overrides = overrides;
-    } else {
-      const def = (SETTINGS_CACHE.custom_roles && SETTINGS_CACHE.custom_roles[key]) || { label: ROLE_LABELS[key] };
-      const customRoles = Object.assign({}, SETTINGS_CACHE.custom_roles || {}, { [key]: Object.assign({}, def, { tabs }) });
-      const { error } = await sb.from('settings').update({ custom_roles: customRoles }).eq('id', 1);
-      if (error) throw error;
-      SETTINGS_CACHE.custom_roles = customRoles;
-    }
-    rebuildRolesFromSettings(); renderNav();
-    await logAudit('update', 'role_permissions', key, { tabs });
-    closeModal(); toast('Access updated.'); renderTabAsync();
-  } catch(e){ toast('Could not save: ' + e.message); }
-}
-async function addCustomRole(){
-  const name = document.getElementById('newRoleName').value.trim();
-  if (!name) { toast('Enter a role name.'); return; }
-  const key = 'custom_' + slugify(name);
-  if (ROLE_LABELS[key]) { toast('A role with that name already exists.'); return; }
-  const tabs = Array.from(document.querySelectorAll('.newrole_tab_cb:checked')).map(el=>el.value);
-  try {
-    const customRoles = Object.assign({}, SETTINGS_CACHE.custom_roles || {}, { [key]: { label: name, tabs } });
-    const { error } = await sb.from('settings').update({ custom_roles: customRoles }).eq('id', 1);
-    if (error) throw error;
-    SETTINGS_CACHE.custom_roles = customRoles;
-    rebuildRolesFromSettings(); renderNav();
-    await logAudit('create', 'custom_role', key, { name });
-    toast('Role added.'); renderTabAsync();
-  } catch(e){ toast('Could not add role: ' + e.message); }
-}
-async function removeCustomRole(key){
-  if (!confirm('Remove this role? Anyone assigned to it will need a new role set.')) return;
-  try {
-    const customRoles = Object.assign({}, SETTINGS_CACHE.custom_roles || {});
-    delete customRoles[key];
-    const { error } = await sb.from('settings').update({ custom_roles: customRoles }).eq('id', 1);
-    if (error) throw error;
-    SETTINGS_CACHE.custom_roles = customRoles;
-    rebuildRolesFromSettings(); renderNav();
-    await logAudit('delete', 'custom_role', key, {});
-    toast('Role removed.'); renderTabAsync();
-  } catch(e){ toast('Could not remove role: ' + e.message); }
 }
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 async function openAddProfileForm(){
@@ -1710,10 +1417,10 @@ async function openAddProfileForm(){
     <div class="msub">Use this only AFTER creating the login in Supabase (Authentication &rarr; Users). Paste their User UID from there.</div>
     <div class="field"><label>User UID (from Supabase)</label><input id="ap_uid" placeholder="e.g. 3fa1c2e0-1234-4a9b-8b21-abcdef123456" style="font-family:monospace;font-size:12.5px;"></div>
     <div class="field"><label>Full Name</label><input id="ap_name"></div>
-    <div class="field"><label>Role</label><select id="ap_role">${Object.entries(ROLE_LABELS).map(([k,l])=>`<option value="${k}">${esc(l)}</option>`).join('')}</select></div>
+    <div class="field"><label>Role</label><select id="ap_role">${roleOptionsHtml('')}</select></div>
     <div class="field"><label>Linked staff record <span style="font-weight:400;color:var(--grey);">(needed for Check-in and the Welcome-page photo)</span></label>
       <select id="ap_staff"><option value="">— not linked —</option>${(staffList||[]).map(s=>`<option value="${s.id}">${esc(s.name)} ${s.staff_id?'('+esc(s.staff_id)+')':''}</option>`).join('')}</select></div>
-    <div class="field"><label>Classes Assigned (Teachers only — leave all unchecked for unrestricted)</label>
+    <div class="field"><label>Classes Assigned (Teachers: they will see ONLY these classes)</label>
       <div class="tablewrap" style="max-height:140px;overflow-y:auto;border:1px solid var(--line);border-radius:7px;padding:8px 12px;">
         ${CLASSES.map(c => `<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 10px 3px 0;font-size:12.5px;"><input type="checkbox" class="ap_class_cb" value="${c.id}" style="width:auto;">${c.name}</label>`).join('')}
       </div>
@@ -1756,14 +1463,16 @@ async function openEditProfileRole(p){
   const { data: staffList } = await sb.from('staff').select('id,name,staff_id').order('name');
   openModal(`
     <h3>${esc(p.name)}</h3>
-    <div class="field"><label>Role</label><select id="ep_role">${Object.entries(ROLE_LABELS).map(([k,l])=>`<option value="${k}" ${p.role===k?'selected':''}>${esc(l)}</option>`).join('')}</select></div>
+    <div class="field"><label>Role</label><select id="ep_role">${roleOptionsHtml(p.role)}</select></div>
     <div class="field"><label>Linked staff record <span style="font-weight:400;color:var(--grey);">(needed for Check-in and for the Welcome-page photo)</span></label>
       <select id="ep_staff"><option value="">— not linked —</option>${(staffList||[]).map(s=>`<option value="${s.id}" ${p.staff_record_id===s.id?'selected':''}>${esc(s.name)} ${s.staff_id?'('+esc(s.staff_id)+')':''}</option>`).join('')}</select></div>
-    <div class="field"><label>Classes Assigned (Teachers only — leave all unchecked for unrestricted)</label>
+    <div class="field"><label>Classes Assigned (Teachers: they will see ONLY these classes)</label>
       <div class="tablewrap" style="max-height:140px;overflow-y:auto;border:1px solid var(--line);border-radius:7px;padding:8px 12px;">
         ${CLASSES.map(c => `<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 10px 3px 0;font-size:12.5px;"><input type="checkbox" class="ep_class_cb" value="${c.id}" ${(p.classes_assigned||[]).includes(c.id)?'checked':''} style="width:auto;">${c.name}</label>`).join('')}
       </div>
     </div>
+    ${ACCESS_MODE === 'rbac' ? `<div class="field"><label>Sections <span style="font-weight:400;color:var(--grey);">(Principal, Head Teacher, Vice Principals)</span></label>${SECTIONS.map(x => `<label style="display:inline-flex;align-items:center;gap:5px;margin-right:12px;font-size:13px;"><input type="checkbox" class="ep_sec_cb" value="${x}" ${(p.sections_assigned||[]).includes(x)?'checked':''} style="width:auto;">${x}</label>`).join('')}</div>
+    <div class="field"><label>Departments <span style="font-weight:400;color:var(--grey);">(HODs; separate with commas)</span></label><input id="ep_dept" list="deptList" value="${esc((p.departments_assigned||[]).join(', '))}">${deptDatalist()}</div>` : ''}
     <div class="mfoot">
       <button class="btn secondary" onclick="closeModal()">Cancel</button>
       <button class="btn" onclick="saveProfileRole('${p.id}')">Save</button>
@@ -1775,6 +1484,7 @@ async function saveProfileRole(profileId){
   const classesAssigned = Array.from(document.querySelectorAll('.ep_class_cb:checked')).map(el=>el.value);
   const staffRecordId = document.getElementById('ep_staff').value || null;
   const patch = { role, classes_assigned: classesAssigned, staff_record_id: staffRecordId };
+  if (ACCESS_MODE === 'rbac') { patch.sections_assigned = [...document.querySelectorAll('.ep_sec_cb:checked')].map(e => e.value); patch.departments_assigned = (document.getElementById('ep_dept')?.value || '').split(',').map(x => x.trim()).filter(Boolean); }
   try {
     if (staffRecordId) {
       const { data: st } = await sb.from('staff').select('photo_url').eq('id', staffRecordId).maybeSingle();
@@ -2470,7 +2180,7 @@ async function renderGenericModule(moduleKey){
         <button class="btn secondary small" onclick="exportGenericModule('${moduleKey}','csv')">CSV</button>
         <button class="btn secondary small" onclick="exportGenericModule('${moduleKey}','xlsx')">Excel</button>
         <button class="btn ghost small" onclick="exportGenericModule('${moduleKey}','print')">Print</button>
-        <button class="btn" onclick="openGenericForm('${moduleKey}')">${esc(mod.addLabel)}</button>
+        ${genericCan(moduleKey,'add') ? `<button class="btn" onclick="openGenericForm('${moduleKey}')">${esc(mod.addLabel)}</button>` : ''}
       </div>
     </div>
     ${(!rows||rows.length===0) ? `<div class="empty"><div class="big">&#128203;</div>No records yet.</div>` : `
@@ -2478,7 +2188,7 @@ async function renderGenericModule(moduleKey){
       <tr>${mod.columns.map(c => `<th>${esc(mod.fields.find(f=>f.key===c)?.label || c)}</th>`).join('')}<th></th></tr>
       ${rows.map(r => `<tr>
         ${mod.columns.map(c => `<td>${c===mod.amountField ? naira(r[c]) : esc(r[c]??'—')}</td>`).join('')}
-        <td class="right"><button class="iconbtn" onclick='openGenericForm("${moduleKey}",${JSON.stringify(r).replace(/'/g,"&apos;")})'>Edit</button> ${moduleKey==='communications'?`<button class="iconbtn" onclick="copyCommunication('${r.id}')">Copy</button> `:''}<button class="iconbtn" onclick="deleteGenericRecord('${moduleKey}','${r.id}')">Delete</button></td>
+        <td class="right"><button class="iconbtn" onclick='openGenericForm("${moduleKey}",${JSON.stringify(r).replace(/'/g,"&apos;")})'>Edit</button> ${moduleKey==='communications'?`<button class="iconbtn" onclick="copyCommunication('${r.id}')">Copy</button> `:''}${genericCan(moduleKey,'del') ? `<button class="iconbtn" onclick="deleteGenericRecord('${moduleKey}','${r.id}')">Delete</button>` : ''}</td>
       </tr>`).join('')}
     </table></div>`}
   </div>`;
@@ -3258,29 +2968,6 @@ async function deleteDocument(id){
   } catch(e){ toast('Could not delete: ' + e.message); }
 }
 
-// =====================================================================
-// AUDIT LOG — note: this is a lighter-weight log than the old version.
-// It records logins-worth of context implicitly (every action here is
-// already tied to a real, database-verified identity), and explicitly
-// logs corrections. A full "log every write" pass is a good next addition.
-// =====================================================================
-async function renderAuditLog(){
-  const { data: rows } = await sb.from('audit_log').select('*').order('ts', { ascending: false }).limit(200);
-  return `
-  <div class="panel">
-    <div class="desc">Most recent 200 entries. Every write in this system is already tied to a real, verified login — this log adds an explicit trail for corrections and sensitive actions.</div>
-    ${(!rows||rows.length===0) ? `<div class="empty">No audit entries yet.</div>` : `
-    <div class="tablewrap"><table>
-      <tr><th>When</th><th>Who</th><th>Action</th><th>Entity</th></tr>
-      ${rows.map(r => `<tr><td class="mono">${new Date(r.ts).toLocaleString()}</td><td>${esc(r.user_name)} <span class="pill muted">${esc(ROLE_LABELS[r.role]||r.role)}</span></td><td>${esc(r.action)}</td><td>${esc(r.entity)} ${esc(r.entity_id||'')}</td></tr>`).join('')}
-    </table></div>`}
-  </div>`;
-}
-async function logAudit(action, entity, entityId, details){
-  try {
-    await sb.from('audit_log').insert({ user_name: MY_PROFILE?.name||'Unknown', role: MY_PROFILE?.role, action, entity, entity_id: String(entityId||''), details: details||{} });
-  } catch(e) { /* never block the primary action on audit logging failure */ }
-}
 
 
 // =====================================================================
@@ -3355,7 +3042,12 @@ async function exportCustomColumns(format){
   const cols = Array.from(document.querySelectorAll('.cce_col_cb:checked')).map(el=>el.value);
   if (cols.length === 0) { toast('Choose at least one column.'); return; }
   const colDefs = kind==='students' ? CCE_STUDENT_COLUMNS : CCE_STAFF_COLUMNS;
-  const { data } = await sb.from(kind).select('*').order('name');
+  const { data: rawData } = await sb.from(kind).select('*').order('name');
+  let data = rawData;
+  if (kind === 'staff' && ACCESS_MODE === 'rbac') { // address / emergency contact now live in staff_private (visible only to people allowed to see it)
+    const { data: pv } = await sb.from('staff_private').select('*'); const pm = {}; (pv || []).forEach(x => { pm[x.staff_id] = x; });
+    data = (rawData || []).map(x => Object.assign({}, pm[x.id] || {}, x));
+  }
   const rows = (data||[]).map(r => cols.map(c => {
     if (c === 'class_id') return classById(r[c])?.name || '';
     return r[c] ?? '';
@@ -3672,13 +3364,17 @@ async function renderSalary(){
   const active = (staffList||[]).filter(isActiveStaff);
   if (!salaryState.staffId && active.length) salaryState.staffId = active[0].id;
   const staffMember = active.find(s=>s.id===salaryState.staffId);
+  if (staffMember && ACCESS_MODE === 'rbac') {
+    const [fz, bz] = await Promise.all([sb.from('staff_finance').select('*').eq('staff_id', staffMember.id).maybeSingle(), sb.from('staff_bank').select('*').eq('staff_id', staffMember.id).maybeSingle()]);
+    Object.assign(staffMember, { monthly_salary: fz.data?.monthly_salary ?? null, bank_name: bz.data?.bank_name, account_number: bz.data?.account_number });
+  }
 
-  const canEditFin = MY_PROFILE?.role === 'admin' || MY_PROFILE?.role === 'headofschool';
+  const canEditFin = ACCESS_MODE === 'rbac' ? hasPerm('edit_salary') : legacyIsAdmin();
   const finCard = staffMember ? `<div class="bignote" style="margin-bottom:14px;"><div class="row between"><div>
       <strong>${esc(staffMember.name)}</strong> ${staffMember.role?'· '+esc(staffMember.role):''}<br>
       Bank: <strong>${esc(staffMember.bank_name||'not set')}</strong> &nbsp;·&nbsp; Account No.: <strong class="mono">${esc(staffMember.account_number||'not set')}</strong> &nbsp;·&nbsp; Agreed monthly salary: <strong>${staffMember.monthly_salary!=null?naira(staffMember.monthly_salary):'not set'}</strong>
       ${(!staffMember.bank_name||!staffMember.account_number||staffMember.monthly_salary==null)?'<br><span style="color:var(--bad);font-size:12px;">Some financial details are missing — they are added on the Staff record.</span>':''}
-    </div>${canEditFin ? `<button class="btn small secondary" onclick='openStaffForm(${JSON.stringify(staffMember).replace(/'/g,"&apos;")})'>Edit financial details</button>` : ''}</div></div>` : '';
+    </div>${canEditFin ? `<button class="btn small secondary" onclick="openStaffForm('${staffMember.id}')">Edit financial details</button>` : ''}</div></div>` : '';
   let history = [];
   if (staffMember) {
     const { data } = await sb.from('salary_payments').select('*').eq('staff_id', staffMember.id).order('year',{ascending:false}).order('month',{ascending:false});
@@ -3721,7 +3417,9 @@ async function renderSalary(){
   </div>`;
 }
 async function openSalaryPaymentForm(existing){
-  const { data: stf } = await sb.from('staff').select('bank_name,account_number,monthly_salary').eq('id', salaryState.staffId).maybeSingle();
+  let stf = null;
+  if (ACCESS_MODE === 'rbac') { const [fz, bz] = await Promise.all([sb.from('staff_finance').select('monthly_salary').eq('staff_id', salaryState.staffId).maybeSingle(), sb.from('staff_bank').select('*').eq('staff_id', salaryState.staffId).maybeSingle()]); stf = { monthly_salary: fz.data?.monthly_salary, bank_name: bz.data?.bank_name, account_number: bz.data?.account_number }; }
+  else { stf = (await sb.from('staff').select('bank_name,account_number,monthly_salary').eq('id', salaryState.staffId).maybeSingle()).data; }
   const r = Object.assign({ amount: stf?.monthly_salary ?? '', account_number: stf?.account_number || '', bank_name: stf?.bank_name || '' }, existing || {}); // defaults come from the staff record
   openModal(`
     <h3>${existing?'Edit':'Record'} Salary Payment</h3>
@@ -3997,7 +3695,7 @@ async function confirmBulkMove(){
 // ---- end-of-session promotion wizard ----
 let PROMO_PLAN = [];
 async function openPromotionWizard(fromSettings){
-  if (isScopedRole()) { toast('Only Admin / Head of School can run promotions.'); return; }
+  if (!hasPerm('promote_students')) { toast('You do not have permission to promote or move students.'); return; }
   await loadSettings();
   const { data: termRows } = await sb.from('student_results').select('term');
   const terms = [...new Set((termRows||[]).map(r => r.term))];
@@ -4199,7 +3897,7 @@ function staffDayPanel(row, staffId, self){
   const outLoc = r.check_out_at ? ' ' + locBadge(r.check_out_within, r.check_out_distance_m) + ' ' + mapLink(r.check_out_lat, r.check_out_lng) : '';
   const absent = inDone && status === 'A';
   const canCob = inDone && status !== 'A' && !outMarked && !outDone;
-  const unlockBtn = (!self && (inDone || outDone)) ? `<div style="margin-top:6px;"><button class="btn small ghost" onclick="unlockStaffDay()">Unlock today for correction (Admin only, recorded in Audit Log)</button></div>` : '';
+  const unlockBtn = (!self && (inDone || outDone) && hasPerm('edit_attendance')) ? `<div style="margin-top:6px;"><button class="btn small ghost" onclick="unlockStaffDay()">Unlock today for correction (Admin only, recorded in Audit Log)</button></div>` : '';
   return `
   <div class="panel">
     <h2>1 &middot; Time In</h2>
@@ -4269,7 +3967,8 @@ async function staffAct(kind, status){
 
 async function unlockStaffDay(){
   if (!confirm('Unlock today for this staff member so it can be corrected?\n\nThis is recorded in the Audit Log.')) return;
-  const { error } = await sb.rpc('unlock_staff_attendance', { p_staff_id: STAFF_CTX.staffId, p_date: await serverToday(), p_part: 'both' });
+  const why = askReason('Reason for unlocking (required, recorded in the audit log):'); if (!why) return;
+  const { error } = await sb.rpc('unlock_staff_attendance', Object.assign({ p_staff_id: STAFF_CTX.staffId, p_date: await serverToday(), p_part: 'both' }, ACCESS_MODE === 'rbac' ? { p_reason: why } : {}));
   if (error) { toast(error.message); return; }
   await logAudit('unlock', 'staff_attendance', STAFF_CTX.staffId, {});
   toast('Unlocked for correction.'); renderTabAsync();
@@ -4340,10 +4039,1331 @@ async function renderMyAttendance(){
 // ---------- Student register: Admin-only unlock ----------
 async function unlockRegister(){
   if (!confirm(`Unlock the ${classById(attState.classId)?.name || ''} register for ${attState.date} so it can be corrected?\n\nThis is recorded in the Audit Log.`)) return;
-  const { error } = await sb.rpc('unlock_student_register', { p_class: attState.classId, p_date: attState.date });
+  const why = askReason('Reason for unlocking (required, recorded in the audit log):'); if (!why) return;
+  const { error } = await sb.rpc('unlock_student_register', Object.assign({ p_class: attState.classId, p_date: attState.date }, ACCESS_MODE === 'rbac' ? { p_reason: why } : {}));
   if (error) { toast(error.message); return; }
   await logAudit('unlock', 'attendance', attState.classId, { date: attState.date });
   toast('Register unlocked for correction.'); renderTabAsync();
+}
+
+
+// =====================================================================
+// ACCESS CONTROL — client side.
+// The DATABASE decides what data a person can read or change. This layer only
+// decides which menus and buttons to show, from the same permission list.
+// If the access-control migration has not been installed yet, the app falls
+// back to the old four-role behaviour so it keeps working.
+// =====================================================================
+let MY_ACCESS = null;      // result of rpc('my_access')
+let ACCESS_MODE = 'legacy';// 'rbac' once the migration is installed
+let RBAC_ROLES = [];       // every role (for names and dropdowns)
+
+const TAB_PERMS = {
+  students:['view_students'], guardians:['view_students'], staff:['view_staff'], attendance:['view_attendance'],
+  staffAttendance:['view_staff_attendance'], results:['view_results'], fees:['view_fees'], receipts:['view_fees'],
+  salary:['view_salary','process_payroll'], admissions:['view_admissions'], staffLeave:['view_staff_leave'],
+  expenses:['view_expenses'], timetable:['view_timetable'], discipline:['view_discipline','create_discipline_case'],
+  safeguarding:['view_safeguarding'], assets:['view_assets'], inspections:['view_inspections'], procurement:['view_procurement'],
+  communications:['view_communications'], auditLog:['view_audit_logs'], reports:['view_reports'],
+  settings:['manage_school_settings','manage_system','assign_roles','manage_roles','manage_backups'],
+  career:['view_career','view_promotions','assign_career_rank','recommend_promotion','process_promotion','approve_promotion'],
+  por:['view_por','manage_por','approve_por'],
+  rolesPerms:['assign_roles','manage_roles','manage_overrides','revoke_roles'],
+};
+const LEGACY_PERMS = {
+  teacher: ['view_students','view_attendance','mark_attendance','view_results','enter_results','create_discipline_case','view_timetable','view_reports'],
+  bursar: ['view_students','view_fees','record_payment','edit_payment','view_salary','process_payroll','view_expenses','manage_expenses','view_procurement','manage_procurement','view_reports','view_timetable'],
+};
+function legacyIsAdmin(){ const r = MY_PROFILE?.role; return r === 'admin' || r === 'headofschool'; }
+
+async function loadRoleList(){
+  try {
+    const { data, error } = await sb.from('rbac_roles').select('*').order('tier').order('name');
+    if (error) throw error;
+    RBAC_ROLES = data || [];
+    ROLE_LABELS = {}; RBAC_ROLES.forEach(r => { ROLE_LABELS[r.key] = r.name; });
+  } catch(e) { RBAC_ROLES = []; ROLE_LABELS = Object.assign({}, DEFAULT_ROLE_LABELS); }
+}
+async function loadMyAccess(){
+  try {
+    const { data, error } = await sb.rpc('my_access');
+    if (error) throw error;
+    MY_ACCESS = data; ACCESS_MODE = 'rbac';
+  } catch(e) { MY_ACCESS = null; ACCESS_MODE = 'legacy'; }
+  await loadRoleList();
+}
+function hasPerm(p){
+  if (ACCESS_MODE === 'rbac') return !!(MY_ACCESS && (MY_ACCESS.permissions || []).includes(p));
+  if (legacyIsAdmin()) return true;
+  return (LEGACY_PERMS[MY_PROFILE?.role] || []).includes(p);
+}
+function hasAnyPerm(list){ return (list || []).some(hasPerm); }
+function can(tab){
+  if (tab === 'dashboard' || tab === 'myAttendance' || tab === 'documents') return true;
+  if (ACCESS_MODE === 'legacy') {
+    if (['career','por','rolesPerms'].includes(tab)) return false;
+    if (legacyIsAdmin()) return true;
+    return (DEFAULT_PERMISSIONS[MY_PROFILE?.role] || ['dashboard']).includes(tab);
+  }
+  const need = TAB_PERMS[tab];
+  return !need || hasAnyPerm(need);
+}
+function myTier(){ return ACCESS_MODE === 'rbac' ? (MY_ACCESS?.tier ?? 6) : (legacyIsAdmin() ? 1 : 5); }
+
+// ---- which classes this person may see (the database enforces the same list) ----
+function classScope(perm){
+  if (ACCESS_MODE === 'rbac') return (MY_ACCESS?.class_scope && MY_ACCESS.class_scope[perm]) || [];
+  if (legacyIsAdmin()) return CLASSES.map(c => c.id);
+  const c = MY_PROFILE?.classes_assigned;
+  return (c && c.length) ? c : CLASSES.map(x => x.id);
+}
+function visibleClasses(){
+  const ids = new Set([...classScope('view_students'), ...classScope('view_attendance'), ...classScope('view_results'), ...classScope('view_fees')]);
+  return CLASSES.filter(c => ids.has(c.id));
+}
+function isScopedRole(){ return visibleClasses().length < CLASSES.length; }
+function myAssignedClasses(){ return isScopedRole() ? visibleClasses().map(c => c.id) : null; }
+function canAccessClass(classId){ return visibleClasses().some(c => c.id === classId); }
+
+// Same rule as the database: who may hand out which role.
+function canGrantRole(r){
+  const at = myTier();
+  if (at === 1) return true;
+  if (at === 2) return r.tier >= 3;
+  if (at === 3 || at === 4) return r.tier === 5 || (r.tier === 4 && r.scope_type === 'department');
+  return false;
+}
+function assignableRoles(){ return RBAC_ROLES.filter(r => r.active && canGrantRole(r)); }
+function migrationNotice(){
+  return `<div class="panel"><div class="empty"><div class="big">&#128274;</div>
+    <strong>The access-control upgrade has not been installed in the database yet.</strong><br>
+    Run SQL files 19, 20 and 21 in Supabase (in that order), then reload this page.</div></div>`;
+}
+function askReason(msg){
+  const r = prompt(msg || 'Reason (required):');
+  if (r == null) return null;
+  if (r.trim().length < 3) { toast('A reason is required.'); return null; }
+  return r.trim();
+}
+
+// =====================================================================
+// SEARCHABLE DROPDOWN (used for career rank, positions and people)
+// =====================================================================
+function ssHtml(id, items, selected, placeholder){
+  const sel = items.find(i => String(i.value) === String(selected ?? ''));
+  let lastGroup = null, list = '';
+  items.forEach(i => {
+    if (i.group && i.group !== lastGroup) { list += `<div class="ss-grp">${esc(i.group)}</div>`; lastGroup = i.group; }
+    list += `<div class="ss-opt" data-v="${esc(i.value)}" data-l="${esc(i.label)}" data-s="${esc((i.label + ' ' + (i.group || '')).toLowerCase())}" onmousedown="ssPick('${id}', this)">${esc(i.label)}</div>`;
+  });
+  return `<div class="ss" id="ss_${id}">
+    <input type="hidden" id="${id}" value="${esc(selected ?? '')}">
+    <input class="ss-input" autocomplete="off" placeholder="${esc(placeholder || 'Type to search…')}" value="${esc(sel ? sel.label : '')}"
+      onfocus="ssOpen('${id}')" oninput="ssFilter('${id}', this.value)">
+    <div class="ss-list" style="display:none">${list}</div></div>`;
+}
+function ssOpen(id){ const l = document.querySelector('#ss_' + id + ' .ss-list'); if (l) { l.style.display = 'block'; ssFilter(id, ''); } }
+function ssFilter(id, q){
+  const box = document.getElementById('ss_' + id); if (!box) return;
+  const needle = String(q || '').toLowerCase().trim();
+  box.querySelector('.ss-list').style.display = 'block';
+  box.querySelectorAll('.ss-opt').forEach(o => { o.style.display = (!needle || o.dataset.s.includes(needle)) ? '' : 'none'; });
+}
+function ssPick(id, el){
+  const box = document.getElementById('ss_' + id);
+  document.getElementById(id).value = el.dataset.v;
+  box.querySelector('.ss-input').value = el.dataset.l;
+  box.querySelector('.ss-list').style.display = 'none';
+  const fn = window['ssChange_' + id]; if (typeof fn === 'function') fn(el.dataset.v);
+}
+document.addEventListener('mousedown', e => {
+  document.querySelectorAll('.ss-list').forEach(l => { if (!l.parentElement.contains(e.target)) l.style.display = 'none'; });
+});
+async function loadStaffChoices(){
+  const { data } = await sb.from('staff').select('id,name,staff_id,department,status').order('name');
+  return (data || []).filter(isActiveStaff).map(s => ({ value: s.id, label: `${s.name}${s.staff_id ? ' (' + s.staff_id + ')' : ''}${s.department ? ' — ' + s.department : ''}` }));
+}
+
+// =====================================================================
+// ROLES & PERMISSIONS
+// =====================================================================
+let rpTab = 'roles', rpFilter = 'active';
+let RP = {};
+const SECTIONS = ['Nursery', 'Primary', 'Secondary'];
+const MATRIX_GROUPS = [
+  { label:'Student records', view:['view_students'], manage:['create_student','edit_student','delete_student'] },
+  { label:'Student attendance', view:['view_attendance'], manage:['mark_attendance','edit_attendance'] },
+  { label:'Results entry', view:['view_results'], manage:['enter_results'] },
+  { label:'Results approval', view:[], manage:['approve_results'] },
+  { label:'Fees', view:['view_fees'], manage:['record_payment','edit_payment'] },
+  { label:'Payroll / salary', view:['view_salary'], manage:['process_payroll','edit_salary'] },
+  { label:'Staff records', view:['view_staff'], manage:['create_staff','edit_staff'] },
+  { label:'Confidential HR', view:['view_staff_confidential'], manage:[] },
+  { label:'Career rank & promotion', view:['view_career','view_promotions'], manage:['assign_career_rank','recommend_promotion','process_promotion','approve_promotion'] },
+  { label:'Positions of responsibility', view:['view_por'], manage:['manage_por','approve_por'] },
+  { label:'Staff attendance', view:['view_staff_attendance'], manage:['mark_staff_attendance'] },
+  { label:'Discipline', view:['view_discipline'], manage:['create_discipline_case','resolve_discipline_case'] },
+  { label:'Safeguarding', view:['view_safeguarding'], manage:['manage_safeguarding'] },
+  { label:'Admissions', view:['view_admissions'], manage:['manage_admissions'] },
+  { label:'Reports', view:['view_reports'], manage:['export_reports'] },
+  { label:'Roles & access', view:[], manage:['assign_roles','revoke_roles','manage_roles','manage_overrides'] },
+  { label:'School settings', view:[], manage:['manage_school_settings'] },
+  { label:'System, backups, audit', view:['view_audit_logs'], manage:['manage_system','manage_backups'] },
+];
+const SCOPE_TEXT = { all:'', section:' (section)', department:' (dept)', class:' (class)', own:' (own)' };
+function urStatus(u){
+  if (u.status === 'revoked') return 'revoked';
+  const t = todayISO();
+  if (u.start_date > t) return 'scheduled';
+  if (u.end_date && u.end_date < t) return 'expired';
+  return 'active';
+}
+function statusPillRp(s){ return `<span class="pill ${s==='active'?'ok':s==='scheduled'?'warn':'muted'}">${esc(s)}</span>`; }
+
+async function renderRolesPerms(){
+  if (ACCESS_MODE !== 'rbac') return migrationNotice();
+  const [roles, rperms, perms, urs, ovs, staff, profiles] = await Promise.all([
+    sb.from('rbac_roles').select('*').order('tier').order('name'),
+    sb.from('role_permissions').select('role_id,permission_key'),
+    sb.from('permissions').select('*').order('sort'),
+    sb.from('user_roles').select('*').order('assigned_at', { ascending:false }),
+    sb.from('user_permission_overrides').select('*').order('created_at', { ascending:false }),
+    sb.from('staff').select('id,name,staff_id'),
+    sb.from('profiles').select('id,name,role,staff_record_id'),
+  ]);
+  RP = { roles: roles.data || [], rperms: rperms.data || [], perms: perms.data || [], urs: urs.data || [], ovs: ovs.data || [],
+         staff: staff.data || [], profiles: profiles.data || [] };
+  RP.staffName = {}; RP.staff.forEach(s => { RP.staffName[s.id] = s.name + (s.staff_id ? ' (' + s.staff_id + ')' : ''); });
+  RP.roleById = {}; RP.roles.forEach(r => { RP.roleById[r.id] = r; });
+  RP.permLabel = {}; RP.perms.forEach(p => { RP.permLabel[p.key] = p.label; });
+  const tabs = [['roles','Roles'],['assign','Role assignments'],['overrides','Individual permissions'],['matrix','Permission matrix'],['sim','Access simulator']];
+  const body = ({ roles: rpRoles, assign: rpAssign, overrides: rpOverrides, matrix: rpMatrix, sim: rpSim })[rpTab]();
+  return `<div class="panel"><div class="tabbar" style="margin-bottom:14px;">
+    ${tabs.map(([k,l]) => `<button class="tabbtn ${rpTab===k?'active':''}" onclick="rpTab='${k}';renderTabAsync();">${l}</button>`).join('')}</div>${body}</div>`;
+}
+
+// ---------- roles ----------
+function rpRoles(){
+  const permCount = {}; RP.rperms.forEach(x => { permCount[x.role_id] = (permCount[x.role_id] || 0) + 1; });
+  const holders = {};
+  RP.profiles.forEach(p => { const r = RP.roles.find(x => x.key === p.role); if (r) holders[r.id] = (holders[r.id] || 0) + 1; });
+  RP.urs.filter(u => urStatus(u) === 'active').forEach(u => { holders[u.role_id] = (holders[u.role_id] || 0) + 1; });
+  return `<div class="row between" style="margin-bottom:10px;">
+      <div class="desc" style="margin:0;max-width:640px;">A role is a bundle of permissions. Career rank never grants a role &mdash; roles come from a person's login, a position of responsibility, or a temporary assignment.</div>
+      ${hasPerm('manage_roles') ? `<button class="btn" onclick="openRoleEditor(null)">+ New role</button>` : ''}</div>
+    <div class="tablewrap"><table>
+      <tr><th>Role</th><th>Authority</th><th>Scope</th><th class="right">Permissions</th><th class="right">Holders</th><th>Status</th><th></th></tr>
+      ${RP.roles.map(r => `<tr>
+        <td><strong>${esc(r.name)}</strong>${r.is_system ? ' <span class="pill muted">built-in</span>' : ''}<div style="font-size:11px;color:var(--grey);max-width:380px;">${esc(r.description || '')}</div></td>
+        <td>Tier ${r.tier}</td><td>${esc(r.scope_type)}${r.default_sections && r.default_sections.length ? ' · ' + esc(r.default_sections.join(', ')) : ''}</td>
+        <td class="right mono">${r.key === 'admin' ? 'all' : (permCount[r.id] || 0)}</td><td class="right mono">${holders[r.id] || 0}</td>
+        <td>${r.active ? '<span class="pill ok">active</span>' : '<span class="pill muted">inactive</span>'}</td>
+        <td class="right"><button class="iconbtn" onclick="openRoleEditor('${r.id}')">${hasPerm('manage_roles') && r.key !== 'admin' ? 'Edit' : 'View'}</button></td></tr>`).join('')}
+    </table></div>`;
+}
+function openRoleEditor(roleId){
+  const r = roleId ? RP.roleById[roleId] : null;
+  const isNew = !r, locked = !!r && (r.key === 'admin' || !hasPerm('manage_roles') || (myTier() !== 1 && r.tier <= myTier()));
+  const have = new Set(r ? RP.rperms.filter(x => x.role_id === r.id).map(x => x.permission_key) : []);
+  const mine = new Set(ACCESS_MODE === 'rbac' ? (MY_ACCESS.permissions || []) : []);
+  const cats = [...new Set(RP.perms.map(p => p.category))];
+  const minTier = myTier() === 1 ? 2 : myTier() + 1;
+  openModal(`
+    <h3>${isNew ? 'New role' : esc(r.name)}</h3>
+    ${r && r.key === 'admin' ? `<div class="bignote">The Proprietor role is fixed: it always holds every permission and cannot be edited.</div>` : ''}
+    ${locked && r && r.key !== 'admin' ? `<div class="bignote">You can view this role but not change it (it has the same or more authority than you, or you lack the permission to manage roles).</div>` : ''}
+    <div class="fgrid">
+      <div class="field"><label>Role name *</label><input id="re_name" value="${esc(r?.name || '')}" ${locked ? 'disabled' : ''}></div>
+      <div class="field"><label>Role key ${isNew ? '*' : ''}</label><input id="re_key" value="${esc(r?.key || '')}" ${isNew ? 'placeholder="e.g. exam_officer"' : 'disabled'}></div>
+    </div>
+    <div class="field"><label>Description</label><input id="re_desc" value="${esc(r?.description || '')}" ${locked ? 'disabled' : ''}></div>
+    <div class="fgrid">
+      <div class="field"><label>Authority tier</label><select id="re_tier" ${locked || (r && r.is_system) ? 'disabled' : ''}>
+        ${[1,2,3,4,5].filter(t => (r && r.tier === t) || t >= minTier).map(t => `<option value="${t}" ${(r ? r.tier : 5) === t ? 'selected' : ''}>Tier ${t}${t===1?' — Proprietor':t===2?' — Director':t===3?' — Administrator / HR / Bursar / Sys Admin':t===4?' — HOD / Head / Principal':' — Educator'}</option>`).join('')}</select></div>
+      <div class="field"><label>Scope (where its permissions apply)</label><select id="re_scope" ${locked ? 'disabled' : ''}>
+        ${[['all','Whole school'],['section','Section(s)'],['department','Department(s)'],['class','Assigned class(es)'],['own','Own record only']].map(([v,l]) => `<option value="${v}" ${(r ? r.scope_type : 'class') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    </div>
+    <div class="field"><label>Default sections (for section-scoped roles)</label>
+      ${SECTIONS.map(s => `<label style="display:inline-flex;align-items:center;gap:5px;margin-right:12px;font-size:13px;"><input type="checkbox" class="re_sec_cb" value="${s}" ${(r?.default_sections || []).includes(s) ? 'checked' : ''} ${locked ? 'disabled' : ''} style="width:auto;">${s}</label>`).join('')}</div>
+    ${!isNew ? `<label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:13px;"><input type="checkbox" id="re_active" ${r.active ? 'checked' : ''} ${locked ? 'disabled' : ''} style="width:auto;"> Role is active</label>` : ''}
+    <h3 style="font-size:14px;margin:12px 0 6px;">Permissions</h3>
+    <div style="max-height:300px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px 12px;">
+      ${cats.map(c => `<div style="margin:6px 0 2px;display:flex;justify-content:space-between;"><strong style="font-size:12.5px;">${esc(c)}</strong>
+        ${locked ? '' : `<span><button type="button" class="linklike" onclick="rePermCat('${esc(c)}',true)">all</button> · <button type="button" class="linklike" onclick="rePermCat('${esc(c)}',false)">none</button></span>`}</div>
+        ${RP.perms.filter(p => p.category === c).map(p => {
+          const can = locked || myTier() === 1 || mine.has(p.key) || have.has(p.key);
+          return `<label style="display:flex;align-items:center;gap:8px;padding:2px 0;font-size:12.5px;${can ? '' : 'opacity:.5;'}"><input type="checkbox" class="re_perm_cb" data-cat="${esc(c)}" value="${p.key}" ${(r && r.key === 'admin') || have.has(p.key) ? 'checked' : ''} ${locked || !can ? 'disabled' : ''} style="width:auto;">
+            ${esc(p.label)}${p.sensitive ? ' <span class="pill warn" style="font-size:9px;">sensitive</span>' : ''}${can ? '' : ' <span style="font-size:10px;color:var(--grey);">(you do not hold this)</span>'}</label>`;
+        }).join('')}`).join('')}
+    </div>
+    ${locked ? '' : `<div class="field" style="margin-top:10px;"><label>Reason for this change *</label><input id="re_reason" placeholder="Recorded in the audit log"></div>`}
+    <div id="reStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Close</button>
+      ${locked ? '' : `<button class="btn" id="reSaveBtn" onclick="saveRole(${r ? `'${r.id}'` : 'null'})">Save</button>`}</div>`, true);
+}
+function rePermCat(cat, on){ document.querySelectorAll('.re_perm_cb').forEach(cb => { if (cb.dataset.cat === cat && !cb.disabled) cb.checked = on; }); }
+async function saveRole(roleId){
+  const st = document.getElementById('reStatus'), btn = document.getElementById('reSaveBtn');
+  const name = document.getElementById('re_name').value.trim();
+  const reason = (document.getElementById('re_reason')?.value || '').trim();
+  const perms = [...document.querySelectorAll('.re_perm_cb:checked')].map(c => c.value);
+  const secs = [...document.querySelectorAll('.re_sec_cb:checked')].map(c => c.value);
+  if (!name) { st.textContent = 'Enter a role name.'; return; }
+  if (reason.length < 3) { st.textContent = 'A reason is required.'; return; }
+  btn.disabled = true; st.textContent = 'Saving…';
+  try {
+    const tier = Number(document.getElementById('re_tier').value), scope = document.getElementById('re_scope').value, desc = document.getElementById('re_desc').value.trim();
+    if (!roleId) {
+      const { error } = await sb.rpc('create_role', { p_key: document.getElementById('re_key').value.trim(), p_name: name, p_description: desc,
+        p_tier: tier, p_scope_type: scope, p_default_sections: secs, p_perms: perms });
+      if (error) throw error;
+    } else {
+      let r = await sb.rpc('update_role', { p_id: roleId, p_name: name, p_description: desc, p_tier: tier, p_scope_type: scope,
+        p_default_sections: secs, p_active: document.getElementById('re_active').checked, p_reason: reason });
+      if (r.error) throw r.error;
+      r = await sb.rpc('set_role_permissions', { p_id: roleId, p_perms: perms, p_reason: reason });
+      if (r.error) throw r.error;
+    }
+    closeModal(); toast('Role saved.'); await loadRoleList(); renderTabAsync();
+  } catch(e) { btn.disabled = false; st.textContent = e.message; }
+}
+
+// ---------- assignments ----------
+function rpAssign(){
+  const rows = RP.urs.filter(u => rpFilter === 'all' || urStatus(u) === rpFilter);
+  return `<div class="row between" style="margin-bottom:10px;">
+      <div class="row"><select onchange="rpFilter=this.value;renderTabAsync();">
+        ${['active','scheduled','expired','revoked','all'].map(f => `<option value="${f}" ${rpFilter===f?'selected':''}>${f[0].toUpperCase() + f.slice(1)}</option>`).join('')}</select>
+        <span class="desc" style="margin:0;">Temporary and acting roles switch on and off by themselves on their dates.</span></div>
+      ${hasPerm('assign_roles') ? `<button class="btn" onclick="openAssignRole()">+ Assign role</button>` : ''}</div>
+    ${rows.length === 0 ? '<div class="empty">Nothing here.</div>' : `<div class="tablewrap"><table>
+      <tr><th>Person</th><th>Role</th><th>Scope</th><th>From</th><th>To</th><th>Status</th><th>Source</th><th>Assigned by</th><th>Reason</th><th></th></tr>
+      ${rows.map(u => { const s = urStatus(u), r = RP.roleById[u.role_id] || {};
+        const scope = [(u.scope_classes || []).join(', '), (u.scope_sections || []).join(', '), (u.scope_departments || []).join(', ')].filter(Boolean).join(' · ') || 'role default';
+        return `<tr><td>${esc(RP.staffName[u.staff_id] || (RP.profiles.find(p => p.id === u.user_id)?.name) || '—')}</td><td>${esc(r.name || '?')}</td><td style="font-size:12px;">${esc(scope)}</td>
+          <td class="mono">${u.start_date}</td><td class="mono">${u.end_date || 'open'}</td><td>${statusPillRp(s)}</td>
+          <td>${u.source === 'por' ? 'position' : 'manual'}</td><td>${esc(u.assigned_by || '')}</td><td style="font-size:12px;max-width:200px;">${esc(u.reason || u.revoke_reason || '')}</td>
+          <td class="right">${hasPerm('revoke_roles') && (s === 'active' || s === 'scheduled') ? `<button class="iconbtn" onclick="revokeAssignment('${u.id}')">Revoke</button>` : ''}</td></tr>`; }).join('')}
+    </table></div>`}`;
+}
+async function openAssignRole(){
+  const staffItems = await loadStaffChoices();
+  const roles = assignableRoles();
+  if (!roles.length) { toast('Your authority level does not allow assigning roles.'); return; }
+  openModal(`
+    <h3>Assign a role</h3>
+    <div class="msub">Gives extra access on top of the person's normal login role. Set an end date for acting / temporary roles.</div>
+    <div class="field"><label>Person *</label>${ssHtml('ar_staff', staffItems, '', 'Search staff…')}</div>
+    <div class="field"><label>Role *</label><select id="ar_role">${roles.map(r => `<option value="${r.key}">${esc(r.name)} (tier ${r.tier}, ${r.scope_type})</option>`).join('')}</select></div>
+    <div class="field"><label>Classes <span style="font-weight:400;color:var(--grey);">(class-scoped roles)</span></label>${CLASSES.map(c => `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:12.5px;"><input type="checkbox" class="ar_cls" value="${c.id}" style="width:auto;">${c.name}</label>`).join('')}</div>
+    <div class="field"><label>Sections <span style="font-weight:400;color:var(--grey);">(section-scoped roles)</span></label>${SECTIONS.map(s => `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:12.5px;"><input type="checkbox" class="ar_sec" value="${s}" style="width:auto;">${s}</label>`).join('')}</div>
+    <div class="field"><label>Departments <span style="font-weight:400;color:var(--grey);">(department-scoped roles; separate with commas)</span></label><input id="ar_dept" list="deptList" placeholder="e.g. Mathematics">${deptDatalist()}</div>
+    <div class="fgrid">
+      <div class="field"><label>Start</label><input id="ar_start" type="date" value="${todayISO()}"></div>
+      <div class="field"><label>End (optional)</label><input id="ar_end" type="date"></div>
+    </div>
+    <div class="row" style="margin-bottom:8px;"><button type="button" class="btn small ghost" onclick="arQuickEnd(90)">Acting: 3 months</button><button type="button" class="btn small ghost" onclick="arQuickEnd(180)">6 months</button><button type="button" class="btn small ghost" onclick="arQuickEnd(365)">1 year</button></div>
+    <div class="field"><label>Reason *</label><input id="ar_reason" placeholder="e.g. Acting Head Teacher while Mrs X is on leave"></div>
+    <div id="arStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="arBtn" onclick="saveAssignRole()">Assign</button></div>`, true);
+}
+function deptDatalist(){ return `<datalist id="deptList">${DEPARTMENTS.map(d => `<option value="${esc(d)}">`).join('')}</datalist>`; }
+const DEPARTMENTS = ['Mathematics','English','Basic Science','Social Studies','Computer / ICT','Business Studies','Agricultural Science','Civic Education','Religious Studies','Creative Arts','P.H.E','Administration','Finance','HR','Student Affairs','Sports','Nursery','Primary','Secondary'];
+function arQuickEnd(days){ const d = new Date(); d.setDate(d.getDate() + days); document.getElementById('ar_end').value = d.toISOString().slice(0, 10); }
+async function saveAssignRole(){
+  const st = document.getElementById('arStatus'), btn = document.getElementById('arBtn');
+  const staffId = document.getElementById('ar_staff').value, reason = document.getElementById('ar_reason').value.trim();
+  if (!staffId) { st.textContent = 'Choose the person.'; return; }
+  if (reason.length < 3) { st.textContent = 'A reason is required.'; return; }
+  btn.disabled = true; st.textContent = 'Saving…';
+  const { error } = await sb.rpc('assign_role', {
+    p_staff: staffId, p_user: null, p_role_key: document.getElementById('ar_role').value,
+    p_classes: [...document.querySelectorAll('.ar_cls:checked')].map(c => c.value), p_sections: [...document.querySelectorAll('.ar_sec:checked')].map(c => c.value),
+    p_departments: document.getElementById('ar_dept').value.split(',').map(x => x.trim()).filter(Boolean),
+    p_start: document.getElementById('ar_start').value || null, p_end: document.getElementById('ar_end').value || null, p_reason: reason });
+  if (error) { btn.disabled = false; st.textContent = error.message; return; }
+  closeModal(); toast('Role assigned.'); renderTabAsync();
+}
+async function revokeAssignment(id){
+  const reason = askReason('Reason for revoking this role (required, recorded in the audit log):'); if (!reason) return;
+  const { error } = await sb.rpc('revoke_role', { p_id: id, p_reason: reason });
+  if (error) { toast(error.message); return; }
+  toast('Role revoked — access removed immediately.'); renderTabAsync();
+}
+
+// ---------- individual permissions ----------
+function rpOverrides(){
+  const rows = RP.ovs;
+  return `<div class="row between" style="margin-bottom:10px;">
+      <div class="desc" style="margin:0;max-width:640px;">Add or remove ONE permission for ONE person without changing their role or career rank. Granted permissions must expire.</div>
+      ${hasPerm('manage_overrides') ? `<button class="btn" onclick="openOverride()">+ Add override</button>` : ''}</div>
+    ${rows.length === 0 ? '<div class="empty">No individual permissions have been changed.</div>' : `<div class="tablewrap"><table>
+      <tr><th>Person</th><th>Permission</th><th>Effect</th><th>From</th><th>To</th><th>Status</th><th>By</th><th>Reason</th><th></th></tr>
+      ${rows.map(o => { const s = urStatus(o);
+        return `<tr><td>${esc(RP.staffName[o.staff_id] || RP.profiles.find(p => p.id === o.user_id)?.name || '—')}</td><td>${esc(RP.permLabel[o.permission_key] || o.permission_key)}</td>
+          <td><span class="pill ${o.effect === 'grant' ? 'ok' : 'bad'}">${o.effect}</span></td><td class="mono">${o.start_date}</td><td class="mono">${o.end_date || 'open'}</td>
+          <td>${statusPillRp(s)}</td><td>${esc(o.created_by || '')}</td><td style="font-size:12px;">${esc(o.reason || '')}</td>
+          <td class="right">${hasPerm('manage_overrides') && (s === 'active' || s === 'scheduled') ? `<button class="iconbtn" onclick="revokeOverrideRow('${o.id}')">Remove</button>` : ''}</td></tr>`; }).join('')}
+    </table></div>`}`;
+}
+async function openOverride(){
+  const staffItems = await loadStaffChoices();
+  const mine = new Set(MY_ACCESS?.permissions || []);
+  const cats = [...new Set(RP.perms.map(p => p.category))];
+  openModal(`
+    <h3>Individual permission</h3>
+    <div class="field"><label>Person *</label>${ssHtml('ov_staff', staffItems, '', 'Search staff…')}</div>
+    <div class="field"><label>Permission *</label><select id="ov_perm">${cats.map(c => `<optgroup label="${esc(c)}">${RP.perms.filter(p => p.category === c).map(p => `<option value="${p.key}">${esc(p.label)}${myTier() !== 1 && !mine.has(p.key) ? ' (you do not hold this)' : ''}</option>`).join('')}</optgroup>`).join('')}</select></div>
+    <div class="fgrid">
+      <div class="field"><label>Effect</label><select id="ov_effect"><option value="grant">Grant (add)</option><option value="deny">Deny (remove)</option></select></div>
+      <div class="field"><label>Ends *</label><input id="ov_end" type="date"></div>
+    </div>
+    <div class="field"><label>Reason *</label><input id="ov_reason" placeholder="e.g. Acting Academic Coordinator until 31 July"></div>
+    <div id="ovStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="ovBtn" onclick="saveOverride()">Save</button></div>`);
+}
+async function saveOverride(){
+  const st = document.getElementById('ovStatus'), btn = document.getElementById('ovBtn');
+  const staffId = document.getElementById('ov_staff').value, reason = document.getElementById('ov_reason').value.trim();
+  if (!staffId) { st.textContent = 'Choose the person.'; return; }
+  btn.disabled = true; st.textContent = 'Saving…';
+  const { error } = await sb.rpc('grant_override', { p_staff: staffId, p_user: null, p_perm: document.getElementById('ov_perm').value,
+    p_effect: document.getElementById('ov_effect').value, p_start: todayISO(), p_end: document.getElementById('ov_end').value || null, p_reason: reason });
+  if (error) { btn.disabled = false; st.textContent = error.message; return; }
+  closeModal(); toast('Saved.'); renderTabAsync();
+}
+async function revokeOverrideRow(id){
+  const reason = askReason('Reason for removing this override (required):'); if (!reason) return;
+  const { error } = await sb.rpc('revoke_override', { p_id: id, p_reason: reason });
+  if (error) { toast(error.message); return; }
+  toast('Removed.'); renderTabAsync();
+}
+
+// ---------- matrix ----------
+function rpMatrix(){
+  const byRole = {}; RP.rperms.forEach(x => { (byRole[x.role_id] = byRole[x.role_id] || new Set()).add(x.permission_key); });
+  const allKeys = new Set(RP.perms.map(p => p.key));
+  const roles = RP.roles.filter(r => r.active);
+  const cell = (r, g) => {
+    const set = r.key === 'admin' ? allKeys : (byRole[r.id] || new Set());
+    const manage = g.manage.some(k => set.has(k)), view = g.view.some(k => set.has(k));
+    const sc = SCOPE_TEXT[r.scope_type] || '';
+    if (manage) return `<td style="background:#E7F3EA;color:#2E6B3E;font-weight:700;">&#10003;<span style="font-weight:400;font-size:10px;">${sc}</span></td>`;
+    if (view) return `<td style="background:#FBF3DD;color:#8a6d1f;">View<span style="font-size:10px;">${sc}</span></td>`;
+    return `<td style="color:#bbb;">&mdash;</td>`;
+  };
+  return `<div class="desc">Built live from the real permission settings, so it is always accurate. <span class="pill ok">&#10003; can change</span> <span class="pill warn">View</span> only look &middot; <span class="pill muted">&mdash;</span> no access. The bracket shows where the permission applies (a section, a department, an assigned class).</div>
+    <div class="tablewrap matrix"><table>
+      <tr><th>Function</th>${roles.map(r => `<th style="min-width:84px;">${esc(r.name)}<div style="font-weight:400;font-size:9.5px;">tier ${r.tier}</div></th>`).join('')}</tr>
+      ${MATRIX_GROUPS.map(g => `<tr><td><strong>${esc(g.label)}</strong></td>${roles.map(r => cell(r, g)).join('')}</tr>`).join('')}
+    </table></div>`;
+}
+
+// ---------- simulator ----------
+function rpSim(){
+  setTimeout(async () => {
+    const box = document.getElementById('simPick'); if (!box) return;
+    box.innerHTML = ssHtml('sim_staff', await loadStaffChoices(), '', 'Search for a staff member…');
+  }, 0);
+  return `<div class="desc" style="margin-bottom:10px;">Pick a staff member to see exactly what the system will let them do, computed by the database from their roles, positions, temporary assignments and overrides.</div>
+    <div class="row" style="align-items:flex-start;"><div id="simPick" style="min-width:320px;flex:1;max-width:460px;">Loading…</div><button class="btn" onclick="runSimulator()">Preview access</button></div>
+    <div id="simOut" style="margin-top:14px;"></div>`;
+}
+async function runSimulator(){
+  const sid = document.getElementById('sim_staff')?.value; const out = document.getElementById('simOut');
+  if (!sid) { toast('Choose a staff member.'); return; }
+  out.textContent = 'Working it out…';
+  const { data, error } = await sb.rpc('effective_access_for', { p_staff: sid });
+  if (error) { out.innerHTML = `<div class="bignote" style="color:var(--bad);">${esc(error.message)}</div>`; return; }
+  const perms = new Set(data.permissions || []);
+  const cats = [...new Set(RP.perms.map(p => p.category))];
+  out.innerHTML = `
+    <div class="bignote"><strong>${esc(RP.staffName[sid] || '')}</strong> — authority tier <strong>${data.tier === 6 ? 'none' : data.tier}</strong>, ${perms.size} permission(s).<br>
+      Roles now in force: ${(data.roles || []).length ? data.roles.map(r => `<span class="badge b-role">${esc(ROLE_LABELS[r.key] || r.key)}${r.source === 'assigned' ? ' (assigned)' : ''}</span>`).join('') : '<em>none — only own records</em>'}</div>
+    <div class="row" style="gap:18px;margin:10px 0;flex-wrap:wrap;">${Object.entries(data.class_scope || {}).map(([k, v]) =>
+      `<div style="font-size:12px;"><strong>${esc(RP.permLabel[k] || k)}</strong><br>${(v || []).length === 12 ? 'all classes' : ((v || []).map(c => classById(c)?.name || c).join(', ') || 'no classes')}</div>`).join('')}</div>
+    <div class="tablewrap"><table><tr><th>Area</th><th>Allowed</th><th>Not allowed</th></tr>
+      ${cats.map(c => { const ps = RP.perms.filter(p => p.category === c);
+        return `<tr><td><strong>${esc(c)}</strong></td><td style="font-size:12px;">${ps.filter(p => perms.has(p.key)).map(p => esc(p.label)).join('<br>') || '—'}</td>
+          <td style="font-size:12px;color:var(--grey);">${ps.filter(p => !perms.has(p.key)).map(p => esc(p.label)).join('<br>') || '—'}</td></tr>`; }).join('')}
+    </table></div>`;
+}
+
+function roleOptionsHtml(selected){
+  if (!RBAC_ROLES.length) return Object.entries(ROLE_LABELS).map(([k, l]) => `<option value="${k}" ${selected === k ? 'selected' : ''}>${esc(l)}</option>`).join('');
+  const list = assignableRoles(); const cur = RBAC_ROLES.find(r => r.key === selected);
+  const all = cur && !list.includes(cur) ? [cur, ...list] : list;
+  return all.map(r => `<option value="${r.key}" ${selected === r.key ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
+}
+const GENERIC_PERMS = { staffLeave:{add:'manage_staff_leave',del:'manage_staff_leave'}, expenses:{add:'manage_expenses',del:'manage_expenses'},
+  discipline:{add:'create_discipline_case',del:'resolve_discipline_case'}, safeguarding:{add:'manage_safeguarding',del:'manage_safeguarding'},
+  assets:{add:'manage_assets',del:'manage_assets'}, inspections:{add:'manage_inspections',del:'manage_inspections'},
+  procurement:{add:'manage_procurement',del:'manage_procurement'}, communications:{add:'manage_communications',del:'manage_communications'} };
+function genericCan(key, kind){ if (ACCESS_MODE !== 'rbac') return true; const p = GENERIC_PERMS[key]; return !p || hasPerm(p[kind]); }
+// ID counters: the database hands out each number once (two people can never get the same one).
+// Falls back to the old read-and-write method if the upgrade is not installed yet.
+async function bumpCounter(key){
+  if (ACCESS_MODE === 'rbac') { const { data, error } = await sb.rpc('next_counter', { p_key: key }); if (error) throw error; return data; }
+  const { data } = await sb.from('settings').select('id_counters').eq('id', 1).maybeSingle();
+  const counters = (data && data.id_counters) || {}; const next = (counters[key] || 0) + 1; counters[key] = next;
+  await sb.from('settings').update({ id_counters: counters }).eq('id', 1); return next;
+}
+
+
+// =====================================================================
+// CAREER FRAMEWORK — pure logic (also run by the automated tests)
+// QUALIFICATION -> suggested rank (a SUGGESTION only)  |  RANK = professional designation
+// POSITION OF RESPONSIBILITY = leadership duty        |  ROLE = system access
+// These are four separate things and are never derived from one another.
+// =====================================================================
+const CAREER_RANKS_FALLBACK = [
+  {rank:1,code:'ED-01',designation:'Support Services Staff'},{rank:2,code:'ED-02',designation:'Senior Support Services Staff'},
+  {rank:3,code:'ED-03',designation:'Teaching Assistant'},{rank:4,code:'ED-04',designation:'Senior Teaching Assistant'},
+  {rank:5,code:'ED-05',designation:'Associate Educator'},{rank:6,code:'ED-06',designation:'Senior Associate Educator'},
+  {rank:7,code:'ED-07',designation:'Certified Educator'},{rank:8,code:'ED-08',designation:'Senior Certified Educator'},
+  {rank:9,code:'ED-09',designation:'Professional Educator'},{rank:10,code:'ED-10',designation:'Senior Professional Educator'},
+  {rank:11,code:'ED-11',designation:'Advanced Professional Educator'},{rank:12,code:'ED-12',designation:'Senior Advanced Professional Educator'},
+  {rank:13,code:'ED-13',designation:'Lead Educator'},{rank:14,code:'ED-14',designation:'Academic Fellow'},{rank:15,code:'ED-15',designation:'Senior Academic Fellow'},
+];
+const QUAL_SUGGEST = { primary_cert:1, ssce:3, nd:5, ond:5, diploma:5, nce:7, bsc:9, bed:9, pgde:null, msc:11, med:11, ma:11, phd:14, edd:14, other:null };
+const QUAL_LEVEL   = { primary_cert:1, ssce:2, nd:3, ond:3, diploma:3, nce:4, bsc:5, bed:5, pgde:5.5, msc:6, med:6, ma:6, phd:7, edd:7, other:0 };
+const QUAL_LABEL   = { primary_cert:'Primary/Basic Certificate', ssce:'SSCE/WAEC/NECO', nd:'ND', ond:'OND', diploma:'Diploma', nce:'NCE', bsc:'BSc', bed:'BEd', pgde:'PGDE', msc:'MSc', med:'MEd', ma:'MA', phd:'PhD', edd:'EdD', other:'Other Approved Qualification' };
+const RANK_LADDER  = [[1,2],[3,4],[4,5],[5,6],[6,7],[7,8],[8,9],[9,10],[10,13],[11,12],[12,13],[14,15]];
+// Highest VERIFIED qualification that carries a suggestion. Unverified qualifications never suggest anything.
+function suggestRankFromQualifications(quals){
+  const v = (quals || []).filter(q => q.verification_status === 'verified' && QUAL_SUGGEST[q.qualification_key] != null);
+  if (!v.length) return null;
+  v.sort((a, b) => QUAL_LEVEL[b.qualification_key] - QUAL_LEVEL[a.qualification_key]);
+  return QUAL_SUGGEST[v[0].qualification_key];
+}
+function nextRanksFrom(rank){ return RANK_LADDER.filter(p => p[0] === rank).map(p => p[1]); }
+function isOnLadder(from, to){ return RANK_LADDER.some(p => p[0] === from && p[1] === to); }
+function daysAgoISO(n){ return new Date(Date.now() - n * 864e5).toLocaleDateString('en-CA', { timeZone:'Africa/Lagos' }); }
+function serviceYears(d){ if (!d) return null; return Math.round(((Date.now() - new Date(d + 'T00:00:00').getTime()) / (365.25 * 864e5)) * 10) / 10; }
+function porState(a){
+  if (a.approval_status === 'pending') return 'pending';
+  if (a.approval_status === 'rejected') return 'rejected';
+  if (a.status === 'revoked') return 'ended';
+  const t = todayISO();
+  if (a.start_date > t) return 'scheduled';
+  if (a.end_date && a.end_date < t) return 'expired';
+  return 'active';
+}
+
+// ---------------- reference data ----------------
+let CAREER = { ranks: [], paths: [], bands: [], quals: [], positions: [], ok: false };
+async function loadCareerRefs(force){
+  if (CAREER.ok && !force) return CAREER;
+  const q = await Promise.all([
+    sb.from('career_ranks').select('*').order('rank'), sb.from('rank_paths').select('*'),
+    sb.from('salary_bands').select('*').order('rank'), sb.from('qualification_types').select('*').order('sort'),
+    sb.from('positions').select('*').order('por_code')]);
+  CAREER.ok = !q[0].error && (q[0].data || []).length > 0;
+  CAREER.ranks = CAREER.ok ? q[0].data : []; CAREER.paths = q[1].data || []; CAREER.bands = q[2].data || [];
+  CAREER.quals = q[3].data || []; CAREER.positions = q[4].data || [];
+  return CAREER;
+}
+const rankObj = n => CAREER.ranks.find(r => r.rank === n) || CAREER_RANKS_FALLBACK.find(r => r.rank === n);
+const rankLabel = n => { const r = rankObj(n); return r ? `${r.code} — ${r.designation}` : '—'; };
+const rankItems = () => (CAREER.ranks.length ? CAREER.ranks : CAREER_RANKS_FALLBACK).map(r => ({ value: r.rank, label: `${String(r.rank).padStart(2, '0')} — ${r.designation}` }));
+const rankBadge = n => n ? `<span class="badge b-rank">${esc(rankLabel(n))}</span>` : `<span class="badge" style="background:#eee;color:#777;">No rank yet</span>`;
+const positionById = id => CAREER.positions.find(p => p.id === id);
+function bandsForRank(r){ return CAREER.bands.filter(b => b.rank === r && b.status !== 'retired'); }
+function careerUnavailable(){ return `<div class="panel"><div class="empty"><div class="big">&#128274;</div><strong>The career framework has not been installed in the database yet.</strong><br>Run SQL files 19, 20 and 21 in Supabase, then reload.</div></div>`; }
+const val = id => (document.getElementById(id)?.value || '').trim();
+
+// =====================================================================
+// STAFF LIST
+// =====================================================================
+let staffFilter = { q: '', rank: '', dept: '', status: 'active' };
+let openStaffProfileId = null;
+async function nextStaffId(){
+  const n = await bumpCounter('staffId');
+  return `SHS/STF/${String(n).padStart(3, '0')}`;
+}
+async function renderStaff(){
+  await loadCareerRefs();
+  const [st, por, prof] = await Promise.all([
+    sb.from('staff').select('*').order('name'),
+    sb.from('por_assignments').select('staff_id,position_id,approval_status,status,start_date,end_date'),
+    sb.from('profiles').select('role,staff_record_id')]);
+  if (st.error) return `<div class="panel"><div class="empty" style="color:var(--bad);">${esc(st.error.message)}</div></div>`;
+  const all = st.data || [];
+  const roleOf = {}; (prof.data || []).forEach(p => { if (p.staff_record_id) roleOf[p.staff_record_id] = p.role; });
+  const porOf = {}; (por.data || []).filter(a => porState(a) === 'active').forEach(a => { (porOf[a.staff_id] = porOf[a.staff_id] || []).push(positionById(a.position_id)?.name || '?'); });
+  const depts = [...new Set(all.map(s => s.department).filter(Boolean))].sort();
+  const f = staffFilter;
+  const rows = all.filter(s => (!f.q || (s.name || '').toLowerCase().includes(f.q.toLowerCase()) || (s.staff_id || '').toLowerCase().includes(f.q.toLowerCase()))
+    && (!f.rank || (f.rank === 'none' ? !s.career_rank : String(s.career_rank) === f.rank))
+    && (!f.dept || s.department === f.dept)
+    && (f.status === 'all' || (f.status === 'active' ? isActiveStaff(s) : !isActiveStaff(s))));
+  return `<div class="panel">
+    <div class="row between" style="margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+      <div class="row" style="flex-wrap:wrap;">
+        <div class="searchbox"><span class="sic">&#128269;</span><input placeholder="Search name or ID…" value="${esc(f.q)}" oninput="staffFilter.q=this.value;renderTabAsync();" style="width:190px;"></div>
+        <select onchange="staffFilter.rank=this.value;renderTabAsync();"><option value="">All ranks</option><option value="none" ${f.rank==='none'?'selected':''}>No rank yet</option>${(CAREER.ranks.length?CAREER.ranks:CAREER_RANKS_FALLBACK).map(r => `<option value="${r.rank}" ${f.rank===String(r.rank)?'selected':''}>${esc(r.code)} ${esc(r.designation)}</option>`).join('')}</select>
+        <select onchange="staffFilter.dept=this.value;renderTabAsync();"><option value="">All departments</option>${depts.map(d => `<option ${f.dept===d?'selected':''}>${esc(d)}</option>`).join('')}</select>
+        <select onchange="staffFilter.status=this.value;renderTabAsync();">${[['active','Active'],['left','Exited'],['all','All']].map(([v,l]) => `<option value="${v}" ${f.status===v?'selected':''}>${l}</option>`).join('')}</select>
+      </div>
+      <div class="row">${hasPerm('create_staff') ? `<button class="btn" onclick="openStaffForm()">+ Register Staff</button><button class="btn secondary" onclick="openStaffImportModal()">&#8613; Import</button>` : ''}</div>
+    </div>
+    ${rows.length === 0 ? `<div class="empty"><div class="big">&#128100;</div>No staff match.</div>` : `
+    <div class="tablewrap"><table>
+      <tr><th>Staff ID</th><th>Name</th><th>Career rank</th><th>Position of responsibility</th><th>Department</th><th>System role</th><th>Status</th><th></th></tr>
+      ${rows.map(s => `<tr class="clickable" onclick="openStaffProfile('${s.id}')">
+        <td class="mono">${esc(s.staff_id || '—')}</td>
+        <td><strong>${esc(s.name)}</strong><div style="font-size:11px;color:var(--grey);">${esc(s.role || '')}</div></td>
+        <td>${rankBadge(s.career_rank)}</td>
+        <td>${(porOf[s.id] || []).map(n => `<span class="badge b-por">${esc(n)}</span>`).join('') || '<span style="color:#bbb;">—</span>'}</td>
+        <td>${s.department ? `<span class="badge b-dept">${esc(s.department)}</span>` : '—'}</td>
+        <td>${roleOf[s.id] ? `<span class="badge b-role">${esc(ROLE_LABELS[roleOf[s.id]] || roleOf[s.id])}</span>` : '<span style="color:#bbb;">no login</span>'}</td>
+        <td>${staffStatusPill(s.status)}</td>
+        <td class="right"><span class="iconbtn">Profile &#8250;</span></td></tr>`).join('')}
+    </table></div>`}
+  </div>`;
+}
+function openStaffProfile(id){ openStaffProfileId = id; CUR_TAB = 'staff'; render(); }
+
+// =====================================================================
+// STAFF PROFILE
+// =====================================================================
+async function renderStaffProfile(){
+  await loadCareerRefs();
+  const id = openStaffProfileId;
+  const { data: s } = await sb.from('staff').select('*').eq('id', id).maybeSingle();
+  if (!s) { openStaffProfileId = null; return `<div class="panel"><div class="empty">Staff record not found, or it is outside your access.</div></div>`; }
+  const mine = id === MY_PROFILE?.staff_record_id;
+  const [fin, bank, priv, quals, promos, pors, urs, att, boss, prof] = await Promise.all([
+    sb.from('staff_finance').select('*').eq('staff_id', id).maybeSingle(),
+    sb.from('staff_bank').select('*').eq('staff_id', id).maybeSingle(),
+    sb.from('staff_private').select('*').eq('staff_id', id).maybeSingle(),
+    sb.from('staff_qualifications').select('*').eq('staff_id', id).order('year_obtained', { ascending:false }),
+    sb.from('promotions').select('*').eq('staff_id', id).order('effective_date', { ascending:false }),
+    sb.from('por_assignments').select('*').eq('staff_id', id).order('start_date', { ascending:false }),
+    sb.from('user_roles').select('*').eq('staff_id', id).order('assigned_at', { ascending:false }),
+    sb.from('staff_attendance').select('status,date').eq('staff_id', id).gte('date', daysAgoISO(90)),
+    s.reports_to_staff_id ? sb.from('staff').select('name').eq('id', s.reports_to_staff_id).maybeSingle() : Promise.resolve({ data: null }),
+    sb.from('profiles').select('id,name,role,sections_assigned,departments_assigned,classes_assigned').eq('staff_record_id', id).maybeSingle()]);
+  const F = fin.data, B = bank.data, P = priv.data, Q = quals.data || [], PR = promos.data || [], PO = pors.data || [], UR = urs.data || [], L = prof.data;
+  const activePor = PO.filter(a => porState(a) === 'active');
+  const allowance = activePor.reduce((t, a) => t + Number(a.allowance || 0), 0);
+  const a90 = att.data || []; const present = a90.filter(r => r.status === 'P' || r.status === 'L').length;
+  const attPct = a90.length ? Math.round(100 * present / a90.length) : null;
+  const svc = serviceYears(s.date_joined);
+  const verified = Q.some(q => q.verification_status === 'verified');
+  const suggested = s.suggested_rank || suggestRankFromQualifications(Q);
+  const step = (ok, txt, act) => `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;"><span style="color:${ok ? 'var(--ok)' : '#bbb'};font-size:15px;">${ok ? '&#10003;' : '&#9711;'}</span><span style="flex:1;${ok ? '' : 'color:var(--grey);'}">${txt}</span>${act || ''}</div>`;
+  const checklist = `<div class="panel"><h2>Appointment checklist</h2>
+    ${step(true, 'Personal details recorded')}
+    ${step(Q.length > 0, 'Qualification recorded', hasPerm('edit_staff') && !Q.length ? `<button class="btn small secondary" onclick="openQualifications('${id}')">Add</button>` : '')}
+    ${step(verified, 'Qualification verified by management' + (suggested ? ` — suggests <strong>${esc(rankLabel(suggested))}</strong>` : ''), Q.length && !verified && hasPerm('assign_career_rank') ? `<button class="btn small secondary" onclick="openQualifications('${id}')">Verify</button>` : '')}
+    ${step(!!s.career_rank, 'Career rank approved' + (s.career_rank ? ` — ${esc(rankLabel(s.career_rank))}` : ''), !s.career_rank && verified && hasPerm('assign_career_rank') ? `<button class="btn small" onclick="openRankReview('${id}')">Approve rank</button>` : '')}
+    ${step(!!L, 'System login linked' + (L ? ` — ${esc(ROLE_LABELS[L.role] || L.role)}` : ' (Settings &rarr; Staff Logins)'))}
+    ${step(activePor.length > 0, 'Position of responsibility <span style="color:var(--grey);">(optional)</span>' + (activePor.length ? ` — ${esc(activePor.map(a => positionById(a.position_id)?.name).join(', '))}` : ''), hasPerm('manage_por') ? `<button class="btn small secondary" onclick="openAssignPor('${id}')">Assign</button>` : '')}
+    ${step(!!s.career_rank, 'Appointment letter', s.career_rank ? `<button class="btn small secondary" onclick="printAppointmentLetter('${id}')">Generate</button>` : '')}
+  </div>`;
+  const kv = (k, v) => `<tr><td style="padding:4px 12px 4px 0;color:var(--grey);font-size:12.5px;white-space:nowrap;">${k}</td><td style="padding:4px 0;font-size:13.5px;">${v || '—'}</td></tr>`;
+  return `
+  <button class="btn ghost small" onclick="openStaffProfileId=null;render();" style="margin-bottom:14px;">&larr; Back to Staff</button>
+  <div class="panel">
+    <div class="row between" style="align-items:flex-start;flex-wrap:wrap;gap:10px;">
+      <div class="row" style="align-items:center;gap:14px;">
+        ${s.photo_url ? `<img src="${esc(s.photo_url)}" style="width:76px;height:88px;object-fit:cover;border-radius:8px;border:1px solid var(--line);">` : `<div style="width:76px;height:88px;border-radius:8px;border:1px solid var(--line);background:var(--cream);display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;color:var(--gold);">${esc((s.name || '?').charAt(0))}</div>`}
+        <div>
+          <h2 style="margin:0 0 3px;">${esc(s.name)}</h2>
+          <div class="mono" style="font-size:12.5px;margin-bottom:6px;">${esc(s.staff_id || 'No Staff ID')} · ${staffStatusPill(s.status)}</div>
+          <div>${rankBadge(s.career_rank)}${activePor.map(a => `<span class="badge b-por">POR: ${esc(positionById(a.position_id)?.name || '?')}</span>`).join('')}${s.department ? `<span class="badge b-dept">${esc(s.department)}</span>` : ''}${L ? `<span class="badge b-role">Role: ${esc(ROLE_LABELS[L.role] || L.role)}</span>` : ''}</div>
+        </div>
+      </div>
+      <div class="row" style="flex-wrap:wrap;gap:6px;max-width:460px;justify-content:flex-end;">
+        ${hasPerm('edit_staff') ? `<button class="btn secondary small" onclick="openStaffForm('${id}')">Edit details</button>` : ''}
+        ${(hasPerm('edit_staff') || hasPerm('view_staff_confidential') || mine) ? `<button class="btn secondary small" onclick="openQualifications('${id}')">Qualifications</button>` : ''}
+        ${s.career_rank && hasAnyPerm(['recommend_promotion','process_promotion','approve_promotion']) && !mine ? `<button class="btn small" onclick="openPromotion('${id}')">Promote</button>` : ''}
+        ${hasPerm('manage_por') && !mine ? `<button class="btn secondary small" onclick="openAssignPor('${id}')">Assign responsibility</button>` : ''}
+        ${hasPerm('assign_roles') && !mine ? `<button class="btn secondary small" onclick="openAssignRoleFor('${id}')">Assign role</button>` : ''}
+        <button class="btn ghost small" onclick="printIdCard('staff','${id}')">ID card</button>
+      </div>
+    </div>
+  </div>
+  ${(!s.career_rank || !verified || !L) && (hasPerm('edit_staff') || hasPerm('assign_career_rank')) ? checklist : ''}
+  <div class="fgrid" style="align-items:start;">
+    <div class="panel"><h2>Professional</h2><table>
+      ${kv('Highest qualification', esc(s.highest_qualification || (Q.length ? 'Awaiting verification' : '')))}
+      ${kv('Career rank', s.career_rank ? `${rankBadge(s.career_rank)}<div style="font-size:11px;color:var(--grey);">effective ${fmtDate(s.rank_effective_date)}</div>` : (suggested ? `Suggested: ${esc(rankLabel(suggested))}<div style="font-size:11px;color:var(--grey);">awaiting management approval</div>` : ''))}
+      ${kv('Date appointed', fmtDate(s.date_joined))}${kv('Years of service', svc != null ? svc + ' yr' : '')}
+      ${kv('Employment', esc([s.employment_type, s.contract_end_date ? 'contract ends ' + fmtDate(s.contract_end_date) : ''].filter(Boolean).join(' · ')))}
+      ${kv('Subjects', esc(s.subjects_taught))}
+    </table></div>
+    <div class="panel"><h2>Current appointment</h2><table>
+      ${kv('Designation', s.career_rank ? esc(rankObj(s.career_rank)?.designation) : '')}
+      ${kv('Job title (ID card)', esc(s.role))}
+      ${kv('Position(s) of responsibility', activePor.map(a => `${esc(positionById(a.position_id)?.name || '?')}${a.is_primary ? '' : ' (secondary)'}<div style="font-size:11px;color:var(--grey);">${fmtDate(a.start_date)} to ${a.end_date ? fmtDate(a.end_date) : 'open'}</div>`).join('') || '')}
+      ${kv('Department · Section', esc([s.department, s.section].filter(Boolean).join(' · ')))}
+      ${kv('Classes', (s.classes_assigned || []).map(c => esc(classById(c)?.name || c)).join(', '))}
+      ${kv('Reports to', esc(boss.data?.name))}
+    </table></div>
+  </div>
+  <div class="fgrid" style="align-items:start;">
+    ${(F || B) || hasPerm('view_salary') || mine ? `<div class="panel"><h2>Compensation</h2><table>
+      ${kv('Salary band', F?.salary_band_id ? esc(CAREER.bands.find(b => b.id === F.salary_band_id)?.band_name || '') : '')}
+      ${kv('Current salary', F?.monthly_salary != null ? naira(F.monthly_salary) : '')}
+      ${kv('Position allowance', allowance ? naira(allowance) : '')}
+      ${kv('Effective since', F?.effective_date ? fmtDate(F.effective_date) : '')}
+      ${kv('Bank', esc(B ? `${B.bank_name || ''} ${B.account_number || ''}` : ''))}
+    </table></div>` : ''}
+    <div class="panel"><h2>Performance &amp; attendance</h2><table>
+      ${kv('Attendance (last 90 days)', attPct != null ? `${attPct}% present or late · ${a90.length} day(s) recorded` : 'No staff attendance recorded')}
+      ${kv('Appraisals · training · KPIs', '<span style="color:var(--grey);">Not recorded yet &mdash; planned for the next release</span>')}
+    </table></div>
+  </div>
+  ${P ? `<div class="panel"><h2>Confidential HR record</h2><table>
+      ${kv('Date of birth', fmtDate(P.date_of_birth))}${kv('Residential address', esc(P.address))}
+      ${kv('Emergency contact', esc([P.emergency_contact_name, P.emergency_contact_relationship ? '(' + P.emergency_contact_relationship + ')' : '', P.emergency_contact_phone].filter(Boolean).join(' ')))}
+      ${kv('Documents on file', esc(P.documents_note))}</table></div>` : ''}
+  <div class="panel"><h2>Career &amp; promotion history</h2>
+    ${PR.length === 0 ? `<div class="desc" style="margin:0;">No career records yet.</div>` : `<div class="tablewrap"><table>
+      <tr><th>Effective</th><th>Type</th><th>From</th><th>To</th><th>Status</th><th>Approved by</th><th></th></tr>
+      ${PR.map(p => `<tr><td class="mono">${p.effective_date}</td><td>${esc(p.kind)}${p.off_ladder ? ' <span class="pill warn">off-ladder</span>' : ''}</td>
+        <td>${p.previous_rank ? esc(rankLabel(p.previous_rank)) : '—'}</td><td>${esc(rankLabel(p.new_rank))}</td><td>${promoPill(p.status)}</td><td>${esc(p.approved_by || '—')}</td>
+        <td class="right">${['approved','effective'].includes(p.status) ? `<button class="iconbtn" onclick="printPromotionLetter('${p.id}')">Letter</button>` : ''}</td></tr>`).join('')}
+    </table></div>`}</div>
+  <div class="panel"><h2>Responsibility history</h2>
+    ${PO.length === 0 ? `<div class="desc" style="margin:0;">No positions of responsibility.</div>` : `<div class="tablewrap"><table>
+      <tr><th>Position</th><th>From</th><th>To</th><th>Allowance</th><th>Status</th></tr>
+      ${PO.map(a => `<tr><td>${esc(positionById(a.position_id)?.name || '?')}${a.is_primary ? '' : ' <span class="pill muted">secondary</span>'}</td><td class="mono">${a.start_date}</td><td class="mono">${a.end_date || 'open'}</td>
+        <td class="mono">${hasAnyPerm(['view_salary','approve_por']) ? naira(a.allowance) : '—'}</td><td>${porPill(porState(a))}</td></tr>`).join('')}
+    </table></div>`}</div>
+  <div class="panel"><h2>System access</h2><table>
+      ${kv('Login', L ? esc(L.name) : 'No login linked')}
+      ${kv('Primary role', L ? `<span class="badge b-role">${esc(ROLE_LABELS[L.role] || L.role)}</span>` : '')}
+      ${kv('Extra roles', UR.filter(u => urStatus(u) !== 'revoked').map(u => `${esc(RBAC_ROLES.find(r => r.id === u.role_id)?.name || '?')} <span style="font-size:11px;color:var(--grey);">${urStatus(u)}${u.end_date ? ' until ' + fmtDate(u.end_date) : ''}</span>`).join('<br>'))}
+  </table><div class="desc" style="margin-top:8px;">Career rank never grants system access. Access comes from the login role, a position of responsibility, or a temporary assignment &mdash; see Roles &amp; Permissions.</div></div>`;
+}
+function promoPill(s){ const m = { recommended:'warn', processed:'warn', approved:'ok', effective:'ok', rejected:'bad', withdrawn:'muted' }; return `<span class="pill ${m[s] || 'muted'}">${esc(s)}</span>`; }
+function porPill(s){ const m = { active:'ok', pending:'warn', scheduled:'warn', expired:'muted', ended:'muted', rejected:'bad' }; return `<span class="pill ${m[s] || 'muted'}">${esc(s)}</span>`; }
+async function openAssignRoleFor(staffId){
+  await openAssignRole();
+  const items = await loadStaffChoices(); const it = items.find(i => i.value === staffId);
+  if (it) { document.getElementById('ar_staff').value = staffId; document.querySelector('#ss_ar_staff .ss-input').value = it.label; }
+}
+
+// =====================================================================
+// STAFF FORM (identity, employment, confidential, bank, salary live in separate protected tables)
+// =====================================================================
+async function openStaffForm(arg){
+  let s = {}; let priv = {}, bank = {}, fin = {};
+  if (arg && typeof arg === 'object') s = arg;
+  else if (arg) { const { data } = await sb.from('staff').select('*').eq('id', arg).maybeSingle(); s = data || {}; }
+  const isNew = !s.id;
+  const suggestedId = isNew ? await nextStaffId().catch(() => '') : '';
+  if (!isNew) {
+    const [p, b, f] = await Promise.all([sb.from('staff_private').select('*').eq('staff_id', s.id).maybeSingle(),
+      sb.from('staff_bank').select('*').eq('staff_id', s.id).maybeSingle(), sb.from('staff_finance').select('*').eq('staff_id', s.id).maybeSingle()]);
+    priv = p.data || {}; bank = b.data || {}; fin = f.data || {};
+  }
+  const staffItems = (await loadStaffChoices()).filter(i => i.value !== s.id);
+  const canBank = hasPerm('edit_staff') || hasPerm('edit_salary'), canSal = hasPerm('edit_salary');
+  const h = (t) => `<h3 style="font-size:13.5px;margin:16px 0 8px;color:var(--navy);border-bottom:1px solid var(--line);padding-bottom:4px;">${t}</h3>`;
+  openModal(`
+    <h3>${isNew ? 'Register staff' : 'Edit staff details'}</h3>
+    <div class="row" style="align-items:flex-start;gap:14px;margin-bottom:6px;">
+      <div><img id="st_photo_preview" src="${esc(s.photo_url || '')}" style="width:78px;height:90px;object-fit:cover;border-radius:6px;border:1px solid var(--line);background:var(--cream);display:${s.photo_url ? 'block' : 'none'};">
+        <div id="st_photo_placeholder" style="width:78px;height:90px;border-radius:6px;border:1px dashed var(--line);display:${s.photo_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:var(--grey);font-size:11px;">No photo</div></div>
+      <div style="flex:1;"><div class="field"><label>Passport photograph</label><input type="file" id="st_photo" accept="image/*" onchange="previewPhoto('st_photo','st_photo_preview','st_photo_placeholder')"></div></div>
+    </div>
+    ${h('Personal information')}
+    <div class="fgrid">
+      <div class="field"><label>Full name *</label><input id="st_name" value="${esc(s.name || '')}"></div>
+      <div class="field"><label>Staff ID</label><input id="st_staffid" value="${esc(s.staff_id || suggestedId)}"></div>
+    </div>
+    <div class="fgrid">
+      <div class="field"><label>Gender</label><select id="st_gender"><option value="">—</option>${['Male','Female'].map(g => `<option ${s.gender === g ? 'selected' : ''}>${g}</option>`).join('')}</select></div>
+      <div class="field"><label>Date of birth</label><input id="st_dob" type="date" value="${priv.date_of_birth || ''}"></div>
+    </div>
+    <div class="fgrid">
+      <div class="field"><label>Phone</label><input id="st_phone" value="${esc(s.phone || '')}"></div>
+      <div class="field"><label>Email</label><input id="st_email" value="${esc(s.email || '')}"></div>
+    </div>
+    <div class="field"><label>Residential address</label><input id="st_address" value="${esc(priv.address || '')}"></div>
+    ${h('Emergency contact')}
+    <div class="fgrid">
+      <div class="field"><label>Name</label><input id="st_emname" value="${esc(priv.emergency_contact_name || '')}"></div>
+      <div class="field"><label>Relationship</label><input id="st_emrel" list="st_rel_list" value="${esc(priv.emergency_contact_relationship || '')}"><datalist id="st_rel_list">${['Spouse','Father','Mother','Son','Daughter','Brother','Sister','Uncle','Aunt','Guardian','Friend','Other Relative'].map(x => `<option value="${x}">`).join('')}</datalist></div>
+    </div>
+    <div class="field" style="max-width:300px;"><label>Phone</label><input id="st_emphone" value="${esc(priv.emergency_contact_phone || '')}"></div>
+    ${h('Employment')}
+    <div class="fgrid">
+      <div class="field"><label>Date employed</label><input id="st_joined" type="date" value="${s.date_joined || ''}"></div>
+      <div class="field"><label>Employment type</label><select id="st_emptype"><option value="">—</option>${['Full-time','Part-time','Contract'].map(t => `<option ${s.employment_type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+    </div>
+    <div class="fgrid">
+      <div class="field"><label>Contract ends <span style="font-weight:400;color:var(--grey);">(contract staff)</span></label><input id="st_contract" type="date" value="${s.contract_end_date || ''}"></div>
+      <div class="field"><label>Record status</label><select id="st_status">${STAFF_STATUSES.map(v2 => `<option value="${v2}" ${(s.status || 'active') === v2 ? 'selected' : ''}>${STAFF_STATUS_LABELS[v2]}</option>`).join('')}</select></div>
+    </div>
+    <div class="fgrid">
+      <div class="field"><label>Job title <span style="font-weight:400;color:var(--grey);">(printed on ID card)</span></label><input id="st_role" value="${esc(s.role || '')}" placeholder="e.g. Class Teacher, Bursar"></div>
+      <div class="field"><label>Department</label><input id="st_department" list="deptList" value="${esc(s.department || '')}">${deptDatalist()}</div>
+    </div>
+    <div class="fgrid">
+      <div class="field"><label>Section</label><select id="st_section"><option value="">—</option>${['Nursery','Primary','Secondary','Whole school','Administration'].map(x => `<option ${s.section === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+      <div class="field"><label>Reports to</label>${ssHtml('st_reports', staffItems, s.reports_to_staff_id || '', 'Search…')}</div>
+    </div>
+    <div class="field"><label>Subjects taught</label><input id="st_subjects" value="${esc(s.subjects_taught || '')}"></div>
+    <div class="field"><label>Classes assigned</label><div style="max-height:110px;overflow-y:auto;border:1px solid var(--line);border-radius:7px;padding:8px 12px;">
+      ${CLASSES.map(c => `<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 10px 3px 0;font-size:12.5px;"><input type="checkbox" class="st_class_cb" value="${c.id}" ${(s.classes_assigned || []).includes(c.id) ? 'checked' : ''} style="width:auto;">${c.name}</label>`).join('')}</div></div>
+    <div class="field"><label>Documents on file (note)</label><input id="st_documents" value="${esc(priv.documents_note || '')}" placeholder="e.g. certificates sighted, guarantor form"></div>
+    ${canBank ? `${h('Bank details')}<div class="fgrid"><div class="field"><label>Bank name</label><input id="st_bank" value="${esc(bank.bank_name || '')}"></div><div class="field"><label>Account number</label><input id="st_account" value="${esc(bank.account_number || '')}"></div></div>` : ''}
+    ${canSal ? `${h('Salary')}<div class="field" style="max-width:320px;"><label>Agreed monthly salary (₦)</label><input id="st_salary" type="number" value="${fin.monthly_salary ?? ''}"><div style="font-size:11px;color:var(--grey);margin-top:3px;">Normally set from the approved career band when the rank is approved. Change only with authority &mdash; every change is audited.</div></div>` : ''}
+    <div class="bignote" style="margin-top:12px;">Career rank is not edited here. It is approved in the staff profile (Appointment &rarr; Approve rank) and changed only by promotion.</div>
+    <div id="staffSaveStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="staffSaveBtn" onclick="saveStaff(${isNew ? 'null' : `'${s.id}'`})">Save</button></div>
+  `, true);
+}
+async function saveStaff(existingId){
+  const btn = document.getElementById('staffSaveBtn'), st = document.getElementById('staffSaveStatus');
+  const name = val('st_name'); if (!name) { toast('Please enter a name.'); return; }
+  const newStatus = val('st_status');
+  if (existingId) {
+    const { data: prev } = await sb.from('staff').select('status,staff_id').eq('id', existingId).maybeSingle();
+    if (prev && prev.status && prev.status !== 'active' && newStatus === 'active' &&
+        !confirm(`This record is marked "${STAFF_STATUS_LABELS[prev.status] || prev.status}" and carries Staff ID ${prev.staff_id || ''}. Reactivating reuses that same ID.\n\nIf this person is genuinely REJOINING, create a new record with a new ID instead.\n\nOK = reactivate this SAME record. Cancel = stop.`)) return;
+  }
+  const row = { name, staff_id: val('st_staffid') || null, role: val('st_role'), department: val('st_department'), section: val('st_section') || null,
+    gender: val('st_gender') || null, subjects_taught: val('st_subjects'), classes_assigned: [...document.querySelectorAll('.st_class_cb:checked')].map(e => e.value),
+    phone: val('st_phone'), email: val('st_email'), date_joined: val('st_joined') || null, employment_type: val('st_emptype'), status: newStatus,
+    contract_end_date: val('st_contract') || null, reports_to_staff_id: val('st_reports') || null };
+  const photo = document.getElementById('st_photo').files[0];
+  btn.disabled = true; st.textContent = 'Saving…';
+  try {
+    if (photo) { st.textContent = 'Uploading photo…'; row.photo_url = await uploadPhoto(photo, 'staff'); }
+    let sid = existingId;
+    if (existingId) { const r = await sb.from('staff').update(row).eq('id', existingId); if (r.error) throw r.error; }
+    else { const r = await sb.from('staff').insert(row).select('id').single(); if (r.error) throw r.error; sid = r.data.id; }
+    if (hasPerm('edit_staff') || hasPerm('create_staff')) {
+      const r = await sb.from('staff_private').upsert({ staff_id: sid, date_of_birth: val('st_dob') || null, address: val('st_address'),
+        emergency_contact_name: val('st_emname'), emergency_contact_relationship: val('st_emrel'), emergency_contact_phone: val('st_emphone'),
+        documents_note: val('st_documents'), updated_at: new Date().toISOString() }, { onConflict: 'staff_id' });
+      if (r.error) throw r.error;
+    }
+    if (document.getElementById('st_bank')) {
+      if (val('st_bank') || val('st_account')) { const r = await sb.from('staff_bank').upsert({ staff_id: sid, bank_name: val('st_bank'), account_number: val('st_account'), updated_at: new Date().toISOString() }, { onConflict: 'staff_id' }); if (r.error) throw r.error; }
+    }
+    if (document.getElementById('st_salary') && val('st_salary') !== '') {
+      const r = await sb.from('staff_finance').upsert({ staff_id: sid, monthly_salary: Number(val('st_salary')), updated_by: MY_PROFILE?.name, updated_at: new Date().toISOString() }, { onConflict: 'staff_id' });
+      if (r.error) throw r.error;
+    }
+    closeModal(); toast('Staff record saved.'); renderTabAsync();
+  } catch(e) {
+    btn.disabled = false;
+    st.textContent = /duplicate key/.test(e.message) ? 'That Staff ID is already taken.' : 'Could not save: ' + e.message;
+  }
+}
+async function confirmStaffImport(){
+  const rows = STAFF_IMPORT_ROWS.filter(r => r.valid); let n = 0;
+  for (const r of rows) {
+    const staffId = await nextStaffId();
+    const ins = await sb.from('staff').insert({ name: r.name, role: r.role, department: r.department, phone: r.phone, email: r.email, status: 'active', staff_id: staffId }).select('id').single();
+    if (ins.error) continue; n++;
+    if ((r.bank || r.account) && (hasPerm('edit_staff') || hasPerm('edit_salary'))) await sb.from('staff_bank').upsert({ staff_id: ins.data.id, bank_name: r.bank, account_number: r.account }, { onConflict: 'staff_id' });
+    if (r.salary != null && hasPerm('edit_salary')) await sb.from('staff_finance').upsert({ staff_id: ins.data.id, monthly_salary: r.salary, updated_by: MY_PROFILE?.name }, { onConflict: 'staff_id' });
+  }
+  closeModal(); toast(`Imported ${n} staff member(s).`); renderTabAsync();
+}
+
+// =====================================================================
+// QUALIFICATIONS
+// =====================================================================
+async function openQualifications(staffId){
+  await loadCareerRefs();
+  const [sr, qr] = await Promise.all([sb.from('staff').select('name,career_rank').eq('id', staffId).maybeSingle(), sb.from('staff_qualifications').select('*').eq('staff_id', staffId).order('year_obtained', { ascending:false })]);
+  const Q = qr.data || []; const canEdit = hasPerm('edit_staff'), canVerify = hasAnyPerm(['assign_career_rank','process_promotion']);
+  const sug = suggestRankFromQualifications(Q);
+  const types = CAREER.quals.length ? CAREER.quals : Object.entries(QUAL_LABEL).map(([key, label]) => ({ key, label }));
+  openModal(`
+    <h3>Qualifications — ${esc(sr.data?.name || '')}</h3>
+    <div class="bignote" style="margin-bottom:10px;">${sug ? `Highest verified qualification suggests <strong>${esc(rankLabel(sug))}</strong>. This is only a suggestion &mdash; management approves the actual rank.` : 'Verify a qualification to get a rank suggestion. Nothing is promoted automatically.'}</div>
+    ${Q.length === 0 ? '<div class="desc">No qualifications recorded yet.</div>' : `<div class="tablewrap"><table>
+      <tr><th>Qualification</th><th>Institution · field</th><th>Year</th><th>Ref.</th><th>Status</th><th></th></tr>
+      ${Q.map(q => `<tr><td><strong>${esc(QUAL_LABEL[q.qualification_key] || q.qualification_key)}</strong></td><td style="font-size:12px;">${esc([q.institution, q.field_of_study].filter(Boolean).join(' · '))}</td>
+        <td>${q.year_obtained || ''}</td><td class="mono" style="font-size:11px;">${esc(q.certificate_ref || '')}</td>
+        <td><span class="pill ${q.verification_status === 'verified' ? 'ok' : q.verification_status === 'rejected' ? 'bad' : 'warn'}">${esc(q.verification_status)}</span>${q.verified_by ? `<div style="font-size:10px;color:var(--grey);">${esc(q.verified_by)}</div>` : ''}</td>
+        <td class="right">${q.document_url ? `<a class="iconbtn" href="${esc(q.document_url)}" target="_blank" rel="noopener">Document</a> ` : ''}
+          ${canVerify && q.verification_status !== 'verified' ? `<button class="iconbtn" onclick="setQualStatus('${q.id}','verified','${staffId}')">Verify</button>` : ''}
+          ${canVerify && q.verification_status === 'pending' ? `<button class="iconbtn" onclick="setQualStatus('${q.id}','rejected','${staffId}')">Reject</button>` : ''}
+          ${canEdit ? `<button class="iconbtn" onclick="deleteQual('${q.id}','${staffId}')">Delete</button>` : ''}</td></tr>`).join('')}
+    </table></div>`}
+    ${canEdit ? `<h3 style="font-size:13.5px;margin:16px 0 8px;">Add a qualification</h3>
+    <div class="fgrid">
+      <div class="field"><label>Qualification *</label><select id="q_key">${types.map(t => `<option value="${t.key}">${esc(t.label)}</option>`).join('')}</select></div>
+      <div class="field"><label>Year obtained</label><input id="q_year" type="number" min="1950" max="2100"></div>
+    </div>
+    <div class="fgrid">
+      <div class="field"><label>Institution</label><input id="q_inst"></div>
+      <div class="field"><label>Field of study</label><input id="q_field"></div>
+    </div>
+    <div class="fgrid">
+      <div class="field"><label>Certificate no. / reference</label><input id="q_ref"></div>
+      <div class="field"><label>Supporting document</label><input type="file" id="q_doc" accept=".pdf,image/*"></div>
+    </div>
+    <div id="qStatus" class="desc"></div>` : ''}
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Close</button>${canEdit ? `<button class="btn" id="qBtn" onclick="saveQualification('${staffId}')">Add qualification</button>` : ''}</div>`, true);
+}
+async function saveQualification(staffId){
+  const st = document.getElementById('qStatus'), btn = document.getElementById('qBtn'); btn.disabled = true; st.textContent = 'Saving…';
+  try {
+    let url = null; const f = document.getElementById('q_doc').files[0]; if (f) url = await uploadPhoto(f, 'qualifications');
+    const { error } = await sb.from('staff_qualifications').insert({ staff_id: staffId, qualification_key: val('q_key'), institution: val('q_inst'), field_of_study: val('q_field'),
+      year_obtained: val('q_year') ? Number(val('q_year')) : null, certificate_ref: val('q_ref'), document_url: url, created_by: MY_PROFILE?.name });
+    if (error) throw error;
+    toast('Qualification added — awaiting verification.'); await openQualifications(staffId); renderTabAsync();
+  } catch(e) { btn.disabled = false; st.textContent = e.message; }
+}
+async function setQualStatus(id, status, staffId){
+  const { error } = await sb.from('staff_qualifications').update({ verification_status: status }).eq('id', id);
+  if (error) { toast(error.message); return; }
+  toast(status === 'verified' ? 'Verified. The rank suggestion has been updated.' : 'Marked ' + status + '.'); await openQualifications(staffId); renderTabAsync();
+}
+async function deleteQual(id, staffId){
+  if (!confirm('Delete this qualification record?')) return;
+  const { error } = await sb.from('staff_qualifications').delete().eq('id', id);
+  if (error) { toast(error.message); return; }
+  await openQualifications(staffId); renderTabAsync();
+}
+
+// =====================================================================
+// APPOINTMENT: management approves the career rank (suggestion -> review -> approval)
+// =====================================================================
+async function openRankReview(staffId){
+  await loadCareerRefs();
+  const [sr, qr] = await Promise.all([sb.from('staff').select('*').eq('id', staffId).maybeSingle(), sb.from('staff_qualifications').select('*').eq('staff_id', staffId)]);
+  const s = sr.data; if (!s) return;
+  if (s.career_rank) { toast('This person already has a rank. Use Promote to change it.'); return; }
+  const Q = qr.data || []; const sug = suggestRankFromQualifications(Q) || s.suggested_rank;
+  window['ssChange_rr_rank'] = v => rrRefreshBand(v);
+  openModal(`
+    <h3>Approve career rank — ${esc(s.name)}</h3>
+    <div class="msub">Step 4 &rarr; 5: management verifies the qualification, then selects the approved rank.</div>
+    <div class="bignote" style="margin-bottom:10px;">Highest verified qualification: <strong>${esc(s.highest_qualification || 'none verified')}</strong>.<br>
+      System suggestion: <strong>${sug ? esc(rankLabel(sug)) : 'none'}</strong>. You may choose any of the 15 ranks &mdash; a higher qualification does not remove the lower ranks.</div>
+    <div class="field"><label>Approved career rank *</label>${ssHtml('rr_rank', rankItems(), sug || '', 'Search rank…')}</div>
+    <div id="rrBand" class="field"></div>
+    <div class="field"><label>Effective date</label><input id="rr_eff" type="date" value="${todayISO()}"></div>
+    <div class="field"><label>Reason / basis *</label><input id="rr_reason" placeholder="e.g. NCE verified; appointed as Certified Educator"></div>
+    <div id="rrStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="rrBtn" onclick="saveRankReview('${staffId}')">Approve rank</button></div>`);
+  rrRefreshBand(sug || '');
+}
+function rrRefreshBand(rank){
+  const box = document.getElementById('rrBand'); if (!box) return;
+  const bands = bandsForRank(Number(rank));
+  if (!hasPerm('view_salary')) { box.innerHTML = '<div class="desc">The salary band for this rank is applied automatically; salary details are visible only to authorised staff.</div>'; return; }
+  box.innerHTML = bands.length ? `<label>Salary band</label><select id="rr_band">${bands.map(b => `<option value="${b.id}">${esc(b.band_name)} — ${b.base_salary != null ? naira(b.base_salary) : 'not yet approved'}${b.status === 'pending_confirmation' ? ' (to be confirmed)' : ''}</option>`).join('')}</select>` : '<div class="desc">No salary band is set for this rank.</div>';
+}
+async function saveRankReview(staffId){
+  const st = document.getElementById('rrStatus'), btn = document.getElementById('rrBtn');
+  const rank = Number(val('rr_rank')); if (!rank) { st.textContent = 'Choose the rank.'; return; }
+  btn.disabled = true; st.textContent = 'Saving…';
+  const { error } = await sb.rpc('assign_initial_rank', { p_staff: staffId, p_rank: rank, p_band: document.getElementById('rr_band')?.value || null, p_effective: val('rr_eff') || null, p_reason: val('rr_reason') });
+  if (error) { btn.disabled = false; st.textContent = error.message; return; }
+  closeModal(); toast('Career rank approved.'); renderTabAsync();
+}
+
+// =====================================================================
+// PROMOTION WORKFLOW:  recommend -> (HR) process -> approve -> effective
+// =====================================================================
+async function openPromotion(staffId){
+  await loadCareerRefs();
+  const [sr, qr, ar] = await Promise.all([sb.from('staff').select('*').eq('id', staffId).maybeSingle(), sb.from('staff_qualifications').select('*').eq('staff_id', staffId),
+    sb.from('staff_attendance').select('status').eq('staff_id', staffId).gte('date', daysAgoISO(90))]);
+  const s = sr.data; if (!s || !s.career_rank) { toast('Approve a career rank first.'); return; }
+  const a90 = ar.data || []; const pct = a90.length ? Math.round(100 * a90.filter(r => r.status !== 'A').length / a90.length) : null;
+  const next = nextRanksFrom(s.career_rank); const cur = rankObj(s.career_rank);
+  window['ssChange_pm_rank'] = v => pmCheck(Number(v), s.career_rank);
+  const bands = hasPerm('view_salary') ? CAREER.bands : [];
+  openModal(`
+    <h3>Promotion — ${esc(s.name)}</h3>
+    <div class="tablewrap" style="margin-bottom:10px;"><table>
+      <tr><td style="color:var(--grey);width:38%;">Current rank</td><td>${rankBadge(s.career_rank)}</td></tr>
+      <tr><td style="color:var(--grey);">Highest qualification</td><td>${esc(s.highest_qualification || '—')}</td></tr>
+      <tr><td style="color:var(--grey);">Service period</td><td>${serviceYears(s.date_joined) != null ? serviceYears(s.date_joined) + ' years (since ' + fmtDate(s.date_joined) + ')' : '—'} · at this rank since ${fmtDate(s.rank_effective_date)}</td></tr>
+      <tr><td style="color:var(--grey);">Attendance (90 days)</td><td>${pct != null ? pct + '% present or late' : 'not recorded'}</td></tr>
+      <tr><td style="color:var(--grey);">Disciplinary status</td><td style="color:var(--grey);">No staff disciplinary register is kept in this system yet &mdash; confirm manually</td></tr>
+      <tr><td style="color:var(--grey);">Training · performance</td><td style="color:var(--grey);">Not recorded yet (next release)</td></tr>
+    </table></div>
+    <div class="bignote" style="margin-bottom:10px;">On the career ladder, ${esc(cur?.code || '')} normally moves to: ${next.length ? next.map(n => `<strong>${esc(rankLabel(n))}</strong>`).join(' or ') : '<em>no further step defined</em>'}.
+      Any other rank is allowed but is flagged <em>off-ladder</em> and needs a clear reason.</div>
+    <div class="field"><label>Recommended new rank *</label>${ssHtml('pm_rank', rankItems().filter(i => i.value !== s.career_rank), next[0] || '', 'Search rank…')}<div id="pmWarn" style="font-size:12px;color:var(--warn);margin-top:3px;"></div></div>
+    <div class="fgrid">
+      <div class="field"><label>Effective date *</label><input id="pm_eff" type="date" value="${todayISO()}"></div>
+      <div class="field"><label>Supporting evidence (document)</label><input type="file" id="pm_doc" accept=".pdf,image/*"></div>
+    </div>
+    <div class="field"><label>Reason *</label><input id="pm_reason" placeholder="Why this person should be promoted"></div>
+    <div class="field"><label>Evidence / notes</label><input id="pm_evidence"></div>
+    ${hasPerm('view_salary') ? `<div class="fgrid"><div class="field"><label>Proposed new salary (₦) <span style="font-weight:400;color:var(--grey);">(optional; needs salary approval)</span></label><input id="pm_salary" type="number"></div>
+      <div class="field"><label>Salary band</label><select id="pm_band"><option value="">— unchanged —</option>${bands.map(b => `<option value="${b.id}">${esc(b.band_name)}${b.base_salary != null ? ' — ' + naira(b.base_salary) : ''}</option>`).join('')}</select></div></div>` : ''}
+    <div class="field"><label>Comments</label><input id="pm_comments"></div>
+    <div id="pmStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="pmBtn" onclick="saveRecommendation('${staffId}')">Submit recommendation</button></div>`, true);
+  pmCheck(next[0], s.career_rank);
+}
+function pmCheck(to, from){
+  const w = document.getElementById('pmWarn'); if (!w || !to) return;
+  w.textContent = isOnLadder(from, to) ? '' : (to < from ? 'This is a DEMOTION and is off the career ladder.' : 'Off the career ladder: a clear reason is needed.');
+}
+async function saveRecommendation(staffId){
+  const st = document.getElementById('pmStatus'), btn = document.getElementById('pmBtn');
+  const rank = Number(val('pm_rank')); if (!rank) { st.textContent = 'Choose the new rank.'; return; }
+  btn.disabled = true; st.textContent = 'Saving…';
+  try {
+    let url = null; const f = document.getElementById('pm_doc').files[0]; if (f) url = await uploadPhoto(f, 'evidence');
+    const { error } = await sb.rpc('recommend_promotion', { p_staff: staffId, p_new_rank: rank, p_effective: val('pm_eff') || null, p_reason: val('pm_reason'), p_evidence: val('pm_evidence') || null,
+      p_evidence_url: url, p_new_salary: document.getElementById('pm_salary') && val('pm_salary') ? Number(val('pm_salary')) : null, p_new_band: document.getElementById('pm_band')?.value || null, p_comments: val('pm_comments') || null });
+    if (error) throw error;
+    closeModal(); toast('Recommendation submitted for processing and approval.'); renderTabAsync();
+  } catch(e) { btn.disabled = false; st.textContent = e.message; }
+}
+
+// =====================================================================
+// CAREER PAGE: ranks, promotions queue, salary bands
+// =====================================================================
+let careerTab = 'ranks', promoFilter = 'pending';
+async function renderCareer(){
+  await loadCareerRefs();
+  if (!CAREER.ok) return careerUnavailable();
+  const tabs = [['ranks','Career ranks'],['promotions','Promotions & appointments']]; if (hasPerm('view_salary')) tabs.push(['bands','Salary bands']);
+  if (!tabs.some(t => t[0] === careerTab)) careerTab = 'ranks';
+  const body = careerTab === 'ranks' ? await careerRanksHtml() : careerTab === 'promotions' ? await careerPromotionsHtml() : careerBandsHtml();
+  return `<div class="panel"><div class="tabbar" style="margin-bottom:14px;">${tabs.map(([k,l]) => `<button class="tabbtn ${careerTab===k?'active':''}" onclick="careerTab='${k}';renderTabAsync();">${l}</button>`).join('')}</div>${body}</div>`;
+}
+async function careerRanksHtml(){
+  const { data: st } = await sb.from('staff').select('career_rank,status');
+  const count = {}; (st || []).filter(isActiveStaff).forEach(s => { if (s.career_rank) count[s.career_rank] = (count[s.career_rank] || 0) + 1; });
+  const unranked = (st || []).filter(s => isActiveStaff(s) && !s.career_rank).length;
+  return `<div class="desc">The official Shishenri educator ranking. A rank is a <strong>professional designation</strong> &mdash; it does not give management or system permissions.</div>
+    <div class="tablewrap"><table>
+      <tr><th>Rank</th><th>Code</th><th>Designation</th><th>Qualification / eligibility</th><th>Next on ladder</th><th class="right">Staff</th></tr>
+      ${CAREER.ranks.map(r => `<tr><td class="mono">${String(r.rank).padStart(2, '0')}</td><td><span class="badge b-rank">${esc(r.code)}</span></td><td><strong>${esc(r.designation)}</strong></td>
+        <td style="font-size:12px;">${esc(r.eligibility || '')}</td><td style="font-size:12px;">${nextRanksFrom(r.rank).map(n => esc(rankObj(n)?.code)).join(', ') || '—'}</td><td class="right mono">${count[r.rank] || 0}</td></tr>`).join('')}
+    </table></div><div class="desc" style="margin-top:8px;">${unranked} active staff member(s) have no approved rank yet.</div>`;
+}
+async function careerPromotionsHtml(){
+  const [pr, st] = await Promise.all([sb.from('promotions').select('*').order('created_at', { ascending:false }), sb.from('staff').select('id,name')]);
+  const nm = {}; (st.data || []).forEach(s => { nm[s.id] = s.name; });
+  const all = pr.data || [];
+  const rows = all.filter(p => promoFilter === 'all' || (promoFilter === 'pending' ? ['recommended','processed','approved'].includes(p.status) : p.status === promoFilter));
+  return `<div class="row" style="margin-bottom:10px;"><select onchange="promoFilter=this.value;renderTabAsync();">${[['pending','In progress'],['effective','Effective'],['rejected','Rejected'],['withdrawn','Withdrawn'],['all','All']].map(([v,l]) => `<option value="${v}" ${promoFilter===v?'selected':''}>${l}</option>`).join('')}</select>
+      <span class="desc" style="margin:0;">Recommended &rarr; processed by HR &rarr; approved by management &rarr; effective on its date. History is never overwritten.</span></div>
+    ${rows.length === 0 ? '<div class="empty">Nothing here.</div>' : `<div class="tablewrap"><table>
+      <tr><th>Staff</th><th>Type</th><th>From</th><th>To</th><th>Effective</th><th>Status</th><th>Reason</th><th></th></tr>
+      ${rows.map(p => `<tr><td><strong>${esc(nm[p.staff_id] || '?')}</strong></td><td>${esc(p.kind)}${p.off_ladder ? ' <span class="pill warn">off-ladder</span>' : ''}</td>
+        <td>${p.previous_rank ? esc(rankObj(p.previous_rank)?.code) : '—'}</td><td>${esc(rankLabel(p.new_rank))}</td><td class="mono">${p.effective_date}</td><td>${promoPill(p.status)}</td>
+        <td style="font-size:12px;max-width:220px;">${esc(p.reason || '')}<div style="color:var(--grey);">by ${esc(p.recommended_by || '')}</div></td>
+        <td class="right" style="white-space:nowrap;">
+          ${p.status === 'recommended' && hasPerm('process_promotion') ? `<button class="iconbtn" onclick="promoProcess('${p.id}')">Process</button>` : ''}
+          ${['recommended','processed'].includes(p.status) && hasPerm('approve_promotion') ? `<button class="iconbtn" onclick="promoApprove('${p.id}','${p.effective_date}')">Approve</button><button class="iconbtn" onclick="promoReject('${p.id}')">Reject</button>` : ''}
+          ${['recommended','processed'].includes(p.status) && (p.recommended_by_id === MY_PROFILE?.id || hasPerm('approve_promotion')) ? `<button class="iconbtn" onclick="promoWithdraw('${p.id}')">Withdraw</button>` : ''}
+          ${['approved','effective'].includes(p.status) ? `<button class="iconbtn" onclick="printPromotionLetter('${p.id}')">Letter</button>` : ''}</td></tr>`).join('')}
+    </table></div>`}`;
+}
+async function promoProcess(id){ const { error } = await sb.rpc('process_promotion', { p_id: id, p_comments: null }); if (error) return toast(error.message); toast('Processed.'); renderTabAsync(); }
+function promoApprove(id, eff){
+  openModal(`<h3>Approve promotion</h3><div class="field"><label>Effective date</label><input id="pa_eff" type="date" value="${eff}"></div>
+    <div class="field"><label>Comments</label><input id="pa_comments"></div><div class="bignote">If the date is today or earlier the new rank takes effect immediately. A future date takes effect automatically on that day. Previous records are kept.</div>
+    <div id="paStatus" class="desc"></div><div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="promoApproveNow('${id}')">Approve</button></div>`);
+}
+async function promoApproveNow(id){
+  const { error } = await sb.rpc('approve_promotion', { p_id: id, p_effective: val('pa_eff') || null, p_comments: val('pa_comments') || null });
+  if (error) { document.getElementById('paStatus').textContent = error.message; return; }
+  closeModal(); toast('Approved.'); renderTabAsync();
+}
+async function promoReject(id){ const r = askReason('Reason for rejecting (required):'); if (!r) return; const { error } = await sb.rpc('reject_promotion', { p_id: id, p_reason: r }); if (error) return toast(error.message); toast('Rejected.'); renderTabAsync(); }
+async function promoWithdraw(id){ const r = askReason('Reason for withdrawing (required):'); if (!r) return; const { error } = await sb.rpc('withdraw_promotion', { p_id: id, p_reason: r }); if (error) return toast(error.message); toast('Withdrawn.'); renderTabAsync(); }
+function careerBandsHtml(){
+  return `<div class="desc">Salary never changes just because a role changes. Bands are the approved pay for each rank; a promotion applies a band only when management approves it.</div>
+    <div class="tablewrap"><table><tr><th>Rank</th><th>Band</th><th class="right">Base salary</th><th>Status</th><th>Note</th><th></th></tr>
+      ${CAREER.bands.map(b => `<tr><td class="mono">${esc(rankObj(b.rank)?.code || '')}</td><td><strong>${esc(b.band_name)}</strong></td><td class="right mono">${b.base_salary != null ? naira(b.base_salary) : '<span style="color:var(--bad);">not set</span>'}</td>
+        <td><span class="pill ${b.status === 'active' ? 'ok' : 'warn'}">${esc(b.status.replace('_', ' '))}</span></td><td style="font-size:12px;max-width:300px;">${esc(b.notes || '')}</td>
+        <td class="right">${hasPerm('manage_career_framework') ? `<button class="iconbtn" onclick="openBandEditor('${b.id}')">Edit</button>` : ''}</td></tr>`).join('')}
+    </table></div>`;
+}
+function openBandEditor(id){
+  const b = CAREER.bands.find(x => x.id === id); if (!b) return;
+  openModal(`<h3>${esc(b.band_name)}</h3><div class="field"><label>Base salary (₦)</label><input id="be_sal" type="number" value="${b.base_salary ?? ''}"></div>
+    <div class="field"><label>Status</label><select id="be_status">${['active','pending_confirmation','retired'].map(s => `<option value="${s}" ${b.status === s ? 'selected' : ''}>${s.replace('_', ' ')}</option>`).join('')}</select></div>
+    <div class="field"><label>Note</label><input id="be_notes" value="${esc(b.notes || '')}"></div><div id="beStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="saveBand('${id}')">Save</button></div>`);
+}
+async function saveBand(id){
+  const { error } = await sb.from('salary_bands').update({ base_salary: val('be_sal') === '' ? null : Number(val('be_sal')), status: val('be_status'), notes: val('be_notes') || null }).eq('id', id);
+  if (error) { document.getElementById('beStatus').textContent = error.message; return; }
+  closeModal(); await loadCareerRefs(true); toast('Saved.'); renderTabAsync();
+}
+
+// =====================================================================
+// POSITIONS OF RESPONSIBILITY
+// =====================================================================
+let porTab = 'assignments', porFilter = 'active';
+async function renderPor(){
+  await loadCareerRefs();
+  if (!CAREER.positions.length) return careerUnavailable();
+  const tabs = [['assignments','Assignments'],['positions','Positions catalogue']];
+  const body = porTab === 'positions' ? porCatalogueHtml() : await porAssignmentsHtml();
+  return `<div class="panel"><div class="tabbar" style="margin-bottom:14px;">${tabs.map(([k,l]) => `<button class="tabbtn ${porTab===k?'active':''}" onclick="porTab='${k}';renderTabAsync();">${l}</button>`).join('')}</div>${body}</div>`;
+}
+async function porAssignmentsHtml(){
+  const [as, st] = await Promise.all([sb.from('por_assignments').select('*').order('created_at', { ascending:false }), sb.from('staff').select('id,name')]);
+  const nm = {}; (st.data || []).forEach(s => { nm[s.id] = s.name; });
+  const rows = (as.data || []).filter(a => porFilter === 'all' || (porFilter === 'pending' ? a.approval_status === 'pending' : porState(a) === porFilter));
+  const showAllow = hasAnyPerm(['view_salary', 'approve_por']);
+  return `<div class="row between" style="margin-bottom:10px;"><div class="row"><select onchange="porFilter=this.value;renderTabAsync();">${[['active','Active'],['pending','Waiting for approval'],['scheduled','Scheduled'],['expired','Expired'],['ended','Ended / revoked'],['all','All']].map(([v,l]) => `<option value="${v}" ${porFilter===v?'selected':''}>${l}</option>`).join('')}</select>
+      <span class="desc" style="margin:0;">When an appointment ends, its extra permissions and allowance stop automatically. Career rank is unchanged.</span></div>
+      ${hasPerm('manage_por') ? `<button class="btn" onclick="openAssignPor()">+ Assign responsibility</button>` : ''}</div>
+    ${rows.length === 0 ? '<div class="empty">Nothing here.</div>' : `<div class="tablewrap"><table>
+      <tr><th>Staff</th><th>Position</th><th>Scope</th><th>From</th><th>To</th>${showAllow ? '<th class="right">Allowance</th>' : ''}<th>Status</th><th>Approval</th><th></th></tr>
+      ${rows.map(a => { const pos = positionById(a.position_id); const s = porState(a);
+        return `<tr><td><strong>${esc(nm[a.staff_id] || '?')}</strong></td><td>${esc(pos?.name || '?')}${a.is_primary ? '' : ' <span class="pill muted">secondary</span>'}<div style="font-size:11px;color:var(--grey);">${esc(pos?.category || '')}${pos?.default_role_key ? ' · role: ' + esc(ROLE_LABELS[pos.default_role_key] || pos.default_role_key) : ''}</div></td>
+          <td style="font-size:12px;">${esc([a.department, a.section, (a.classes || []).join(', ')].filter(Boolean).join(' · ') || '—')}</td><td class="mono">${a.start_date}</td><td class="mono">${a.end_date || 'open'}</td>
+          ${showAllow ? `<td class="right mono">${naira(a.allowance)}</td>` : ''}<td>${porPill(s)}</td>
+          <td>${a.approval_status === 'pending' ? '<span class="pill warn">pending</span>' : a.approval_status === 'approved' ? esc(a.approved_by || 'approved') : '<span class="pill bad">rejected</span>'}</td>
+          <td class="right" style="white-space:nowrap;">
+            ${a.approval_status === 'pending' && hasPerm('approve_por') ? `<button class="iconbtn" onclick="porApprove('${a.id}')">Approve</button><button class="iconbtn" onclick="porReject('${a.id}')">Reject</button>` : ''}
+            ${a.status === 'active' && a.approval_status !== 'rejected' && hasAnyPerm(['manage_por','approve_por']) ? `<button class="iconbtn" onclick="porEnd('${a.id}')">End</button>` : ''}</td></tr>`; }).join('')}
+    </table></div>`}`;
+}
+function porCatalogueHtml(){
+  const cats = [...new Set(CAREER.positions.map(p => p.category))];
+  return `<div class="row between" style="margin-bottom:10px;"><div class="desc" style="margin:0;">The catalogue of positions. Management can add more at any time.</div>${hasPerm('manage_por') ? `<button class="btn" onclick="openPositionEditor(null)">+ New position</button>` : ''}</div>
+    <div class="tablewrap"><table><tr><th>Code</th><th>Position</th><th>Category</th><th>Reports to</th><th>Authority</th><th>Comes with role</th><th>Status</th><th></th></tr>
+    ${cats.map(c => `<tr><td colspan="8" style="background:var(--cream);font-weight:700;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;">${esc(c)}</td></tr>` + CAREER.positions.filter(p => p.category === c).map(p => `<tr>
+      <td class="mono">${esc(p.por_code || '')}</td><td><strong>${esc(p.name)}</strong><div style="font-size:11px;color:var(--grey);max-width:340px;">${esc(p.description || '')}</div></td><td>${esc(p.category)}</td><td>${esc(p.reports_to_position || '—')}</td>
+      <td>Tier ${p.authority_level}</td><td>${p.default_role_key ? `<span class="badge b-role">${esc(ROLE_LABELS[p.default_role_key] || p.default_role_key)}</span>` : '<span style="color:#bbb;">no extra access</span>'}</td>
+      <td>${p.status === 'active' ? '<span class="pill ok">active</span>' : '<span class="pill muted">inactive</span>'}</td>
+      <td class="right">${hasPerm('manage_por') ? `<button class="iconbtn" onclick="openPositionEditor('${p.id}')">Edit</button>` : ''}</td></tr>`).join('')).join('')}</table></div>`;
+}
+function openPositionEditor(id){
+  const p = id ? positionById(id) : null;
+  const roleOpts = RBAC_ROLES.filter(r => r.active);
+  openModal(`<h3>${p ? esc(p.name) : 'New position'}</h3>
+    <div class="fgrid"><div class="field"><label>Position name *</label><input id="po_name" value="${esc(p?.name || '')}"></div><div class="field"><label>Category</label><input id="po_cat" list="po_cats" value="${esc(p?.category || 'Other')}"><datalist id="po_cats">${[...new Set(CAREER.positions.map(x => x.category))].map(c => `<option value="${esc(c)}">`).join('')}</datalist></div></div>
+    <div class="fgrid"><div class="field"><label>Department</label><input id="po_dept" list="deptList" value="${esc(p?.department || '')}">${deptDatalist()}</div>
+      <div class="field"><label>Reports to (position)</label><input id="po_rep" list="po_reps" value="${esc(p?.reports_to_position || '')}"><datalist id="po_reps">${CAREER.positions.map(x => `<option value="${esc(x.name)}">`).join('')}</datalist></div></div>
+    <div class="field"><label>Description</label><input id="po_desc" value="${esc(p?.description || '')}"></div>
+    <div class="fgrid"><div class="field"><label>Authority level</label><select id="po_auth">${[1,2,3,4,5].map(n => `<option value="${n}" ${(p?.authority_level || 5) === n ? 'selected' : ''}>Tier ${n}</option>`).join('')}</select></div>
+      <div class="field"><label>System role that comes with it</label><select id="po_role"><option value="">None (no extra access)</option>${roleOpts.map(r => `<option value="${r.key}" ${p?.default_role_key === r.key ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select></div></div>
+    <div class="field"><label>KPIs</label><input id="po_kpi" value="${esc(p?.kpi || '')}"></div>
+    <div class="field"><label>Status</label><select id="po_status"><option value="active" ${!p || p.status === 'active' ? 'selected' : ''}>Active</option><option value="inactive" ${p?.status === 'inactive' ? 'selected' : ''}>Inactive</option></select></div>
+    <div class="bignote">The role chosen here is only applied when an appointment is approved by someone whose authority allows it.</div>
+    <div id="poStatus" class="desc"></div><div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="savePosition(${p ? `'${p.id}'` : 'null'})">Save</button></div>`, true);
+}
+async function savePosition(id){
+  const row = { name: val('po_name'), category: val('po_cat') || 'Other', department: val('po_dept') || null, reports_to_position: val('po_rep') || null, description: val('po_desc'),
+    authority_level: Number(val('po_auth')), default_role_key: val('po_role') || null, kpi: val('po_kpi') || null, status: val('po_status') };
+  if (!row.name) { document.getElementById('poStatus').textContent = 'Enter a name.'; return; }
+  let r;
+  if (id) r = await sb.from('positions').update(row).eq('id', id);
+  else { row.por_code = 'POR-' + String(CAREER.positions.length + 1).padStart(3, '0'); r = await sb.from('positions').insert(row); }
+  if (r.error) { document.getElementById('poStatus').textContent = r.error.message; return; }
+  closeModal(); await loadCareerRefs(true); toast('Saved.'); renderTabAsync();
+}
+async function openAssignPor(staffId){
+  await loadCareerRefs();
+  const staffItems = await loadStaffChoices();
+  const posItems = CAREER.positions.filter(p => p.status === 'active').map(p => ({ value: p.id, label: p.name, group: p.category }));
+  window['ssChange_ap_pos'] = v => { const p = positionById(v); if (p && p.department && !document.getElementById('ap_dept').value) document.getElementById('ap_dept').value = p.department; };
+  openModal(`<h3>Assign responsibility</h3>
+    <div class="msub">Appointment workflow: choose the person and position, set the dates, then it goes for approval. Approval applies the position's permissions automatically.</div>
+    <div class="field"><label>Staff member *</label>${ssHtml('ap_staff', staffItems, staffId || '', 'Search staff…')}</div>
+    <div class="field"><label>Position *</label>${ssHtml('ap_pos', posItems, '', 'Search positions…')}</div>
+    <div class="fgrid"><div class="field"><label>Department</label><input id="ap_dept" list="deptList">${deptDatalist()}</div>
+      <div class="field"><label>Section</label><select id="ap_section"><option value="">—</option>${SECTIONS.map(x => `<option>${x}</option>`).join('')}</select></div></div>
+    <div class="field"><label>Classes <span style="font-weight:400;color:var(--grey);">(class teachers)</span></label>${CLASSES.map(c => `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:12.5px;"><input type="checkbox" class="ap_cls" value="${c.id}" style="width:auto;">${c.name}</label>`).join('')}</div>
+    <div class="fgrid"><div class="field"><label>Start *</label><input id="ap_start" type="date" value="${todayISO()}"></div><div class="field"><label>End <span style="font-weight:400;color:var(--grey);">(required for acting)</span></label><input id="ap_end" type="date"></div></div>
+    <div class="field"><label>Reports to</label>${ssHtml('ap_boss', staffItems, '', 'Search…')}</div>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px;"><input type="checkbox" id="ap_primary" checked style="width:auto;"> Primary responsibility (untick for a secondary one)</label>
+    ${hasPerm('approve_por') ? `<div class="field" style="max-width:300px;"><label>Responsibility allowance (₦)</label><input id="ap_allow" type="number" value="0"></div>` : `<div class="desc">The allowance is set by an approver.</div>`}
+    <div class="field"><label>Reason *</label><input id="ap_reason" placeholder="e.g. Appointed HOD Mathematics for 2026/2027"></div>
+    <div id="apStatus2" class="desc"></div><div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="apBtn2" onclick="saveAssignPor()">Submit for approval</button></div>`, true);
+}
+async function saveAssignPor(){
+  const st = document.getElementById('apStatus2'), btn = document.getElementById('apBtn2');
+  if (!val('ap_staff') || !val('ap_pos')) { st.textContent = 'Choose the person and the position.'; return; }
+  btn.disabled = true; st.textContent = 'Saving…';
+  const { error } = await sb.rpc('assign_por', { p_staff: val('ap_staff'), p_position: val('ap_pos'), p_primary: document.getElementById('ap_primary').checked, p_department: val('ap_dept') || null,
+    p_section: val('ap_section') || null, p_classes: [...document.querySelectorAll('.ap_cls:checked')].map(c => c.value), p_start: val('ap_start') || null, p_end: val('ap_end') || null,
+    p_reports_to: val('ap_boss') || null, p_allowance: document.getElementById('ap_allow') ? Number(val('ap_allow') || 0) : 0, p_reason: val('ap_reason') });
+  if (error) { btn.disabled = false; st.textContent = error.message; return; }
+  closeModal(); toast('Submitted. It takes effect once approved.'); renderTabAsync();
+}
+async function porApprove(id){ const { error } = await sb.rpc('approve_por_assignment', { p_id: id, p_comments: null }); if (error) return toast(error.message); toast('Approved — permissions applied.'); renderTabAsync(); }
+async function porReject(id){ const r = askReason('Reason for rejecting (required):'); if (!r) return; const { error } = await sb.rpc('reject_por_assignment', { p_id: id, p_reason: r }); if (error) return toast(error.message); toast('Rejected.'); renderTabAsync(); }
+async function porEnd(id){ const r = askReason('Reason for ending this responsibility (required):'); if (!r) return; const { error } = await sb.rpc('end_por', { p_id: id, p_reason: r }); if (error) return toast(error.message); toast('Ended — its permissions and allowance stop now.'); renderTabAsync(); }
+
+// =====================================================================
+// LETTERS
+// =====================================================================
+async function printAppointmentLetter(staffId){
+  await loadCareerRefs();
+  const [sr, pr, por, fin] = await Promise.all([sb.from('staff').select('*').eq('id', staffId).maybeSingle(), sb.from('promotions').select('*').eq('staff_id', staffId).eq('kind', 'appointment').order('effective_date').limit(1),
+    sb.from('por_assignments').select('*').eq('staff_id', staffId), sb.from('staff_finance').select('*').eq('staff_id', staffId).maybeSingle()]);
+  const s = sr.data; if (!s || !s.career_rank) { toast('Approve a career rank first.'); return; }
+  const r = rankObj(s.career_rank); const active = (por.data || []).filter(a => porState(a) === 'active');
+  const eff = pr.data?.[0]?.effective_date || s.date_joined || todayISO();
+  printHTML(`<div style="font-family:Inter,sans-serif;font-size:13.5px;line-height:1.7;">
+    <p>${fmtDate(todayISO())}</p><p style="color:#555;font-size:12px;">Staff ID: <strong>${esc(s.staff_id || '—')}</strong></p>
+    <p>Dear <strong>${esc(s.name)}</strong>,</p><p><strong>RE: LETTER OF APPOINTMENT — ${esc(r.designation.toUpperCase())}</strong></p>
+    <p>We are pleased to confirm your appointment at ShiShenri Schools as <strong>${esc(r.designation)}</strong> (Career Grade <strong>${esc(r.code)}</strong>), with effect from <strong>${fmtDate(eff)}</strong>.</p>
+    ${active.length ? `<p>You are also appointed to the following position(s) of responsibility: <strong>${esc(active.map(a => positionById(a.position_id)?.name).join(', '))}</strong>. A position of responsibility is separate from your career grade and applies for the period stated in your appointment.</p>` : ''}
+    ${hasPerm('view_salary') && fin.data?.monthly_salary != null ? `<p>Your approved monthly base salary is <strong>${naira(fin.data.monthly_salary)}</strong>.</p>` : ''}
+    <p>Your Staff ID will remain the same throughout your service with the school, including on promotion.</p>
+    <p>We welcome you and look forward to your contribution to the Breath of Excellence.</p>
+    <p style="margin-top:34px;">Yours faithfully,<br><br><br>______________________<br>For: ShiShenri Schools</p></div>`, `Appointment Letter — ${s.name}`);
+}
+async function printPromotionLetter(promoId){
+  await loadCareerRefs();
+  const { data: p } = await sb.from('promotions').select('*').eq('id', promoId).maybeSingle(); if (!p) return;
+  const { data: s } = await sb.from('staff').select('name,staff_id').eq('id', p.staff_id).maybeSingle();
+  const nr = rankObj(p.new_rank);
+  printHTML(`<div style="font-family:Inter,sans-serif;font-size:13.5px;line-height:1.7;">
+    <p>${fmtDate(todayISO())}</p><p style="color:#555;font-size:12px;">Staff ID: <strong>${esc(s?.staff_id || '—')}</strong></p>
+    <p>Dear <strong>${esc(s?.name || '')}</strong>,</p><p><strong>RE: ${p.kind === 'demotion' ? 'CHANGE OF CAREER GRADE' : 'PROMOTION'} — ${esc(nr?.designation.toUpperCase() || '')}</strong></p>
+    <p>${p.kind === 'demotion' ? 'Following review, your career grade has been changed' : 'Following your recommendation and approval by management, we are pleased to inform you of your promotion'}${p.previous_designation ? ` from <strong>${esc(p.previous_designation)}</strong>` : ''} to <strong>${esc(nr?.designation || '')}</strong> (Career Grade <strong>${esc(nr?.code || '')}</strong>), with effect from <strong>${fmtDate(p.effective_date)}</strong>.</p>
+    ${hasPerm('view_salary') && p.new_salary != null ? `<p>Your approved monthly base salary from that date is <strong>${naira(p.new_salary)}</strong>.</p>` : ''}
+    <p>This change concerns your career grade only. Any position of responsibility you hold, and your system access, are unchanged unless separately notified. Your Staff ID is unchanged.</p>
+    <p style="margin-top:34px;">Yours faithfully,<br><br><br>______________________<br>For: ShiShenri Schools</p></div>`, `Promotion Letter — ${s?.name || ''}`);
+}
+
+
+// =====================================================================
+// AUDIT LOG
+// The database records every change to sensitive tables itself (who, what, the
+// previous value, the new value, when, and the network address). Rows cannot be
+// edited or deleted by anyone. The app adds explanatory entries on top.
+// =====================================================================
+let auditState = { q: '', source: '', entity: '', from: '', to: '', limit: 300 };
+let AUDIT_ROWS = [];
+
+// Optional special keys inside `details`: _reason, _prev, _new, _target, _approved_by
+async function logAudit(action, entity, entityId, details){
+  try {
+    const d = Object.assign({}, details || {});
+    const extra = { reason: d._reason || null, previous_value: d._prev || null, new_value: d._new || null, target: d._target || null, approved_by: d._approved_by || null };
+    ['_reason', '_prev', '_new', '_target', '_approved_by'].forEach(k => delete d[k]);
+    await sb.from('audit_log').insert(Object.assign({ user_name: MY_PROFILE?.name || 'Unknown', role: MY_PROFILE?.role, action, entity, entity_id: String(entityId || ''),
+      details: d, source: 'app', device: (navigator.userAgent || '').slice(0, 200) }, extra));
+  } catch(e) { /* an audit failure must never block the real action */ }
+}
+function auditDiff(r){
+  if (r.action === 'insert') return '<span style="color:var(--ok);">created</span>';
+  if (r.action === 'delete') return '<span style="color:var(--bad);">deleted</span>';
+  const p = r.previous_value, n = r.new_value;
+  if (p && n && typeof p === 'object' && typeof n === 'object') {
+    const keys = Object.keys(n).filter(k => !['updated_at', 'id'].includes(k));
+    const show = keys.slice(0, 3).map(k => `<span class="mono" style="font-size:11px;">${esc(k)}</span>: <span style="color:var(--bad);">${esc(short(p[k]))}</span> &rarr; <span style="color:var(--ok);">${esc(short(n[k]))}</span>`).join('<br>');
+    return show + (keys.length > 3 ? `<br><span style="color:var(--grey);">+${keys.length - 3} more</span>` : '');
+  }
+  return '';
+}
+function short(v){ if (v == null) return '∅'; const s = typeof v === 'object' ? JSON.stringify(v) : String(v); return s.length > 40 ? s.slice(0, 40) + '…' : s; }
+async function renderAuditLog(){
+  const f = auditState;
+  let q = sb.from('audit_log').select('*').order('ts', { ascending: false }).limit(f.limit);
+  if (f.source) q = q.eq('source', f.source);
+  if (f.entity) q = q.eq('entity', f.entity);
+  if (f.from) q = q.gte('ts', f.from + 'T00:00:00+01:00');
+  if (f.to) q = q.lte('ts', f.to + 'T23:59:59+01:00');
+  const { data, error } = await q;
+  if (error) return `<div class="panel"><div class="empty" style="color:var(--bad);">${esc(error.message)}</div></div>`;
+  let rows = data || [];
+  if (f.q) { const n = f.q.toLowerCase(); rows = rows.filter(r => [r.user_name, r.action, r.entity, r.entity_id, r.reason, r.target].join(' ').toLowerCase().includes(n)); }
+  AUDIT_ROWS = rows;
+  const entities = [...new Set((data || []).map(r => r.entity).filter(Boolean))].sort();
+  return `<div class="panel">
+    <div class="desc">Every change to sensitive records is captured by the database itself, so it cannot be skipped. The log cannot be edited or deleted by anyone, including administrators.</div>
+    <div class="row" style="flex-wrap:wrap;margin-bottom:12px;gap:8px;">
+      <div class="searchbox"><span class="sic">&#128269;</span><input placeholder="Search who / action / reason…" value="${esc(f.q)}" oninput="auditState.q=this.value;renderTabAsync();" style="width:220px;"></div>
+      <select onchange="auditState.entity=this.value;renderTabAsync();"><option value="">All records</option>${entities.map(e => `<option ${f.entity === e ? 'selected' : ''}>${esc(e)}</option>`).join('')}</select>
+      <select onchange="auditState.source=this.value;renderTabAsync();"><option value="">App + database</option><option value="db" ${f.source === 'db' ? 'selected' : ''}>Database (automatic)</option><option value="app" ${f.source === 'app' ? 'selected' : ''}>App notes</option></select>
+      <label class="desc" style="margin:0;">From <input type="date" value="${f.from}" onchange="auditState.from=this.value;renderTabAsync();" style="width:auto;display:inline-block;"></label>
+      <label class="desc" style="margin:0;">To <input type="date" value="${f.to}" onchange="auditState.to=this.value;renderTabAsync();" style="width:auto;display:inline-block;"></label>
+      ${hasPerm('export_reports') || hasPerm('view_audit_logs') ? `<button class="btn small secondary" onclick="exportAudit('csv')">CSV</button><button class="btn small secondary" onclick="exportAudit('xlsx')">Excel</button>` : ''}
+    </div>
+    ${rows.length === 0 ? '<div class="empty">No entries match.</div>' : `<div class="tablewrap"><table>
+      <tr><th>When</th><th>Who</th><th>Action</th><th>Record</th><th>Change (previous &rarr; new)</th><th>Reason</th><th>Address</th></tr>
+      ${rows.map((r, i) => `<tr class="clickable" onclick="openAuditDetail(${i})">
+        <td class="mono" style="font-size:11.5px;white-space:nowrap;">${new Date(r.ts).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' })}</td>
+        <td>${esc(r.user_name || 'System')}${r.role ? ` <span class="pill muted">${esc(ROLE_LABELS[r.role] || r.role)}</span>` : ''}</td>
+        <td>${esc(r.action)}${r.source === 'db' ? ' <span class="pill muted" style="font-size:9px;">auto</span>' : ''}</td>
+        <td>${esc(r.entity || '')}<div class="mono" style="font-size:10.5px;color:var(--grey);">${esc((r.entity_id || '').slice(0, 14))}</div></td>
+        <td style="font-size:12px;max-width:300px;">${auditDiff(r)}</td><td style="font-size:12px;max-width:180px;">${esc(r.reason || '')}</td>
+        <td class="mono" style="font-size:10.5px;">${esc(r.ip || '')}</td></tr>`).join('')}
+    </table></div>
+    <div class="row between" style="margin-top:10px;"><span class="desc" style="margin:0;">Showing ${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}.</span>
+      ${(data || []).length >= f.limit ? `<button class="btn small secondary" onclick="auditState.limit+=500;renderTabAsync();">Load 500 more</button>` : ''}</div>`}
+  </div>`;
+}
+function openAuditDetail(i){
+  const r = AUDIT_ROWS[i]; if (!r) return;
+  const pv = r.previous_value || {}, nv = r.new_value || {};
+  const keys = [...new Set([...Object.keys(pv), ...Object.keys(nv)])].filter(k => k !== 'updated_at');
+  openModal(`<h3>${esc(r.action)} — ${esc(r.entity || '')}</h3>
+    <div class="msub">${new Date(r.ts).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' })} · ${esc(r.user_name || 'System')} ${r.role ? '(' + esc(ROLE_LABELS[r.role] || r.role) + ')' : ''}${r.ip ? ' · ' + esc(r.ip) : ''}</div>
+    ${r.reason ? `<div class="bignote" style="margin-bottom:10px;"><strong>Reason:</strong> ${esc(r.reason)}</div>` : ''}
+    ${r.approved_by ? `<div class="desc">Approved by ${esc(r.approved_by)}</div>` : ''}
+    ${keys.length ? `<div class="tablewrap"><table><tr><th>Field</th><th>Previous value</th><th>New value</th></tr>
+      ${keys.map(k => `<tr><td class="mono" style="font-size:12px;">${esc(k)}</td><td style="color:var(--bad);font-size:12px;word-break:break-all;">${esc(fullVal(pv[k]))}</td><td style="color:var(--ok);font-size:12px;word-break:break-all;">${esc(fullVal(nv[k]))}</td></tr>`).join('')}</table></div>` : `<div class="desc">${esc(JSON.stringify(r.details || {}))}</div>`}
+    ${r.device ? `<div class="desc" style="margin-top:8px;font-size:11px;">Device: ${esc(r.device)}</div>` : ''}
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Close</button></div>`, true);
+}
+function fullVal(v){ return v == null ? '∅' : (typeof v === 'object' ? JSON.stringify(v) : String(v)); }
+function exportAudit(fmt){
+  const head = ['When', 'Who', 'Role', 'Action', 'Record', 'Record ID', 'Previous value', 'New value', 'Reason', 'Source', 'Address', 'Device'];
+  const rows = [head, ...AUDIT_ROWS.map(r => [new Date(r.ts).toLocaleString('en-GB', { timeZone: 'Africa/Lagos' }), r.user_name, r.role, r.action, r.entity, r.entity_id,
+    r.previous_value ? JSON.stringify(r.previous_value) : '', r.new_value ? JSON.stringify(r.new_value) : '', r.reason, r.source, r.ip, r.device])];
+  if (fmt === 'xlsx') downloadXLSXRows(rows, 'shishenri_audit_log.xlsx', 'Audit'); else downloadCSVText(rowsToCsv(rows), 'shishenri_audit_log.csv');
+}
+
+// =====================================================================
+// FULL BACKUP — every table the signed-in person is allowed to read, as one zip of CSV files.
+// Take one BEFORE running any database upgrade, and at the end of every term.
+// =====================================================================
+const BACKUP_TABLES = ['students','staff','staff_finance','staff_bank','staff_private','staff_qualifications','promotions','por_assignments','positions','career_ranks',
+  'salary_bands','rbac_roles','role_permissions','user_roles','user_permission_overrides','profiles','attendance','staff_attendance','student_results','fee_payments',
+  'salary_payments','settings','admissions','staff_leave','expenses','discipline','safeguarding','assets','inspections','procurement','communications','documents',
+  'timetables','absence_followups','promotion_log','audit_log'];
+function renderBackupPanel(){
+  if (!hasPerm('manage_backups') && !hasPerm('full_access')) return '';
+  return `<div class="panel"><h2>Backup</h2>
+    <div class="desc">Downloads every table you are allowed to read as one zip of spreadsheets (CSV). <strong>Take a backup before every database upgrade</strong> and at the end of each term; keep it somewhere safe &mdash; it contains personal and financial data.</div>
+    <button class="btn" id="backupBtn" onclick="downloadFullBackup()">&#8615; Download full backup</button><div id="backupStatus" class="desc" style="margin-top:8px;"></div></div>`;
+}
+async function fetchAllRows(table){
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from(table).select('*').range(from, from + 999);
+    if (error) return { error, rows: out };
+    out.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return { rows: out };
+}
+async function downloadFullBackup(){
+  if (!window.JSZip) { toast('The zip engine did not load — try again.'); return; }
+  const btn = document.getElementById('backupBtn'), st = document.getElementById('backupStatus');
+  btn.disabled = true; const zip = new window.JSZip(); const report = [`Backup taken ${new Date().toLocaleString('en-GB', { timeZone: 'Africa/Lagos' })} by ${MY_PROFILE?.name} (${MY_PROFILE?.role})`, ''];
+  for (const t of BACKUP_TABLES) {
+    st.textContent = 'Reading ' + t + '…';
+    const { rows, error } = await fetchAllRows(t);
+    if (error) { report.push(`${t}: SKIPPED (${error.message})`); continue; }
+    if (!rows.length) { report.push(`${t}: 0 rows`); continue; }
+    const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
+    zip.file(t + '.csv', rowsToCsv([cols, ...rows.map(r => cols.map(c => (r[c] != null && typeof r[c] === 'object') ? JSON.stringify(r[c]) : r[c]))]));
+    report.push(`${t}: ${rows.length} rows`);
+  }
+  zip.file('_backup_report.txt', report.join('\n'));
+  const blob = await zip.generateAsync({ type: 'blob' });
+  downloadBlob(blob, `shishenri_backup_${todayISO()}.zip`);
+  await logAudit('backup', 'system', 'full', { tables: BACKUP_TABLES.length });
+  btn.disabled = false; st.textContent = 'Backup downloaded. Check _backup_report.txt inside the zip for row counts and anything skipped.'; toast('Backup downloaded.');
 }
 
 </script>
