@@ -98,6 +98,12 @@ input, select, textarea { font-family: inherit; }
 .kpi .value.maroon { color: var(--maroon); }
 .kpi .value.gold { color: #8a6d1f; }
 .kpi .note { font-size: 11.5px; color: var(--grey); margin-top: 4px; }
+.kpi.clickable { cursor: pointer; transition: box-shadow .15s, border-color .15s, transform .1s; position: relative; }
+.kpi.clickable:hover { border-color: var(--navy); box-shadow: 0 3px 12px rgba(22,52,94,.14); transform: translateY(-1px); }
+.kpi.clickable::after { content: 'View details \203A'; position: absolute; right: 12px; bottom: 9px; font-size: 10.5px; color: var(--navy); opacity: 0; transition: opacity .15s; }
+.kpi.clickable:hover::after { opacity: .85; }
+tr.dclick { cursor: pointer; } tr.dclick:hover td { background: var(--cream); }
+.linkbtn { background: none; border: none; color: var(--navy); text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }
 
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; }
 .panel > h2 { margin: 0 0 4px; font-size: 17px; color: var(--navy); }
@@ -220,13 +226,13 @@ select.termsel { width: auto; }
 }
 
 /* ---------- Sign-in gate ---------- */
-#signInGate {
+#signInGate, #resetGate {
   position: fixed; inset: 0; z-index: 500; display: flex; align-items: center; justify-content: center;
   background: radial-gradient(circle at 30% 20%, #1c3f70 0%, #0f2647 55%, #0a1c37 100%);
   padding: 20px; padding-top: calc(20px + env(safe-area-inset-top, 0px)); padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
 }
-#signInGate.hidden { display: none; }
+#signInGate.hidden, #resetGate.hidden { display: none; }
 .signin-card {
   background: #fff; border-radius: 18px; padding: 36px 34px 26px; width: 100%; max-width: 380px;
   text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.35); margin: auto;
@@ -303,7 +309,32 @@ select.termsel { width: auto; }
     </div>
     <div id="signinError" style="color:var(--bad);font-size:12.5px;margin-bottom:10px;text-align:left;"></div>
     <button class="btn" id="signinBtn" style="width:100%;justify-content:center;padding:12px;font-size:14.5px;" onclick="doSignIn()">Sign In &rarr;</button>
+    <div style="margin-top:12px;font-size:13px;"><a href="#" onclick="showForgot();return false;" style="color:var(--navy);">Forgot your password?</a></div>
     <div class="signin-foot">Private system for ShiShenri Schools staff, hosted on your own Supabase project. No subscription — this is yours.</div>
+  </div>
+</div>
+
+<div id="resetGate" class="hidden">
+  <div class="signin-card">
+    <img src="" id="resetLogo" alt="ShiShenri Schools crest">
+    <div class="signin-school">SHISHENRI SCHOOLS</div>
+    <div class="signin-divider"></div>
+    <div id="resetForgotBox">
+      <div class="signin-title">Reset your password</div>
+      <div class="signin-sub">Type the email you sign in with. We will email you a link to choose a new password.</div>
+      <div class="field" style="text-align:left;"><label>Email</label><input id="resetEmail" type="email" placeholder="you@example.com" onkeydown="if(event.key==='Enter')sendResetLink();"></div>
+      <div id="resetMsg" style="font-size:12.5px;margin-bottom:10px;text-align:left;"></div>
+      <button class="btn" id="resetSendBtn" style="width:100%;justify-content:center;padding:12px;" onclick="sendResetLink()">Send reset link</button>
+      <div style="margin-top:12px;font-size:13px;"><a href="#" onclick="backToSignIn();return false;" style="color:var(--navy);">&larr; Back to sign in</a></div>
+    </div>
+    <div id="resetNewBox" style="display:none;">
+      <div class="signin-title">Choose a new password</div>
+      <div class="signin-sub">At least 8 characters, with letters and numbers.</div>
+      <div class="field" style="text-align:left;"><label>New password</label><input id="newPw1" type="password" autocomplete="new-password"></div>
+      <div class="field" style="text-align:left;"><label>Repeat new password</label><input id="newPw2" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter')saveRecoveryPassword();"></div>
+      <div id="newPwMsg" style="color:var(--bad);font-size:12.5px;margin-bottom:10px;text-align:left;"></div>
+      <button class="btn" id="newPwBtn" style="width:100%;justify-content:center;padding:12px;" onclick="saveRecoveryPassword()">Save new password</button>
+    </div>
   </div>
 </div>
 
@@ -321,6 +352,7 @@ select.termsel { width: auto; }
       <label>Signed in as</label>
       <div id="whoAmI" style="color:#fff;font-size:13px;font-weight:600;margin:2px 0 10px;"></div>
       <button class="btn small ghost" style="width:100%;justify-content:center;" onclick="doSignOut()">Sign Out</button>
+      <button class="btn small ghost" style="width:100%;justify-content:center;margin-top:6px;" onclick="openChangePassword()">Change Password</button>
     </div>
     <div id="navList"></div>
     <div class="foot">Private to ShiShenri Schools.<br>Hosted on your own Supabase + Vercel — no subscription, fully yours.</div>
@@ -363,9 +395,12 @@ const LOGO_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAACxCAY
 // =====================================================================
 const SUPABASE_URL = 'https://oztbsxsyirfnxtqhimsw.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96dGJzeHN5aXJmbnh0cWhpbXN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA1MjE2MTAsImV4cCI6MjEwNjA5NzYxMH0.u8-pAaqSo8t12oYFdlMlJGTeu5gRnCApKogwRjvCzPo';
+// Read BEFORE the Supabase library tidies the address bar: did the person arrive from a password-reset email?
+const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
+const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r13'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r15'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -425,7 +460,7 @@ const CORE_TABS = ['dashboard','students','staff','attendance','staffAttendance'
 const DEFAULT_PERMISSIONS = {
   admin: CORE_TABS, headofschool: CORE_TABS,
   bursar: ['dashboard','students','fees','receipts','salary','expenses','procurement','reports','documents'],
-  teacher: ['dashboard','students','attendance','results','discipline','timetable','reports','documents'],
+  teacher: ['dashboard','students','attendance','results','discipline','timetable','documents'],
 };
 
 function gradeFor(total){
@@ -486,7 +521,7 @@ async function doSignIn(){
   const password = document.getElementById('loginPassword').value;
   const errEl = document.getElementById('signinError');
   const btn = document.getElementById('signinBtn');
-  errEl.textContent = '';
+  errEl.textContent = ''; errEl.style.color = 'var(--bad)';
   if (!email || !password) { errEl.textContent = 'Enter both your email and password.'; return; }
   btn.disabled = true; btn.textContent = 'Signing in…';
   try {
@@ -500,6 +535,87 @@ async function doSignIn(){
   } finally {
     btn.disabled = false; btn.textContent = 'Sign In \u2192';
   }
+}
+// ---------- passwords ----------
+function pwProblem(p){
+  if (!p || p.length < 8) return 'Use at least 8 characters.';
+  if (!/[A-Za-z]/.test(p) || !/\d/.test(p)) return 'Use both letters and numbers.';
+  return '';
+}
+function showForgot(){
+  document.getElementById('signInGate').classList.add('hidden');
+  document.getElementById('resetGate').classList.remove('hidden');
+  document.getElementById('resetForgotBox').style.display = ''; document.getElementById('resetNewBox').style.display = 'none';
+  document.getElementById('resetEmail').value = document.getElementById('loginEmail').value || '';
+  document.getElementById('resetMsg').textContent = '';
+}
+function backToSignIn(){
+  document.getElementById('resetGate').classList.add('hidden');
+  document.getElementById('signInGate').classList.remove('hidden');
+}
+async function sendResetLink(){
+  const email = document.getElementById('resetEmail').value.trim(), msg = document.getElementById('resetMsg'), btn = document.getElementById('resetSendBtn');
+  if (!email) { msg.style.color = 'var(--bad)'; msg.textContent = 'Enter your email address.'; return; }
+  btn.disabled = true; msg.style.color = 'var(--grey)'; msg.textContent = 'Sending…';
+  try {
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+    if (error) throw error;
+    msg.style.color = 'var(--ok)'; msg.textContent = 'If that email has a login, a reset link is on its way. Check your inbox (and spam folder). The link works once.';
+  } catch(e) {
+    msg.style.color = 'var(--bad)';
+    msg.textContent = /rate|seconds|limit/i.test(e.message) ? 'Too many requests. Please wait a few minutes and try again.' : ('Could not send the link: ' + e.message);
+  } finally { btn.disabled = false; }
+}
+function showRecovery(){
+  document.getElementById('signInGate').classList.add('hidden');
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('resetGate').classList.remove('hidden');
+  document.getElementById('resetForgotBox').style.display = 'none'; document.getElementById('resetNewBox').style.display = '';
+}
+async function saveRecoveryPassword(){
+  const p1 = document.getElementById('newPw1').value, p2 = document.getElementById('newPw2').value, msg = document.getElementById('newPwMsg'), btn = document.getElementById('newPwBtn');
+  msg.textContent = '';
+  const prob = pwProblem(p1); if (prob) { msg.textContent = prob; return; }
+  if (p1 !== p2) { msg.textContent = 'The two passwords are not the same.'; return; }
+  btn.disabled = true;
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) throw new Error('This reset link has expired or was already used. Go back and request a new one.');
+    const { error } = await sb.auth.updateUser({ password: p1 });
+    if (error) throw error;
+    await sb.auth.signOut();
+    history.replaceState(null, '', location.pathname);
+    document.getElementById('resetGate').classList.add('hidden');
+    document.getElementById('signInGate').classList.remove('hidden');
+    const e = document.getElementById('signinError'); e.style.color = 'var(--ok)'; e.textContent = 'Your password has been changed. Sign in with the new password.';
+  } catch(e) { msg.textContent = e.message; btn.disabled = false; }
+}
+function openChangePassword(){
+  openModal(`<h3>Change my password</h3>
+    <div class="msub">Only you can do this. Admin cannot see your password.</div>
+    <div class="field"><label>Current password</label><input id="cp_old" type="password" autocomplete="current-password"></div>
+    <div class="field"><label>New password</label><input id="cp_new1" type="password" autocomplete="new-password"><div style="font-size:11px;color:var(--grey);margin-top:3px;">At least 8 characters, with letters and numbers.</div></div>
+    <div class="field"><label>Repeat new password</label><input id="cp_new2" type="password" autocomplete="new-password"></div>
+    <div id="cpStatus" class="desc" style="color:var(--bad);"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="cpBtn" onclick="saveChangePassword()">Change password</button></div>`);
+}
+async function saveChangePassword(){
+  const st = document.getElementById('cpStatus'), btn = document.getElementById('cpBtn');
+  const old = document.getElementById('cp_old').value, p1 = document.getElementById('cp_new1').value, p2 = document.getElementById('cp_new2').value;
+  st.style.color = 'var(--bad)'; st.textContent = '';
+  if (!old) { st.textContent = 'Enter your current password.'; return; }
+  const prob = pwProblem(p1); if (prob) { st.textContent = prob; return; }
+  if (p1 !== p2) { st.textContent = 'The two new passwords are not the same.'; return; }
+  if (p1 === old) { st.textContent = 'The new password must be different from the current one.'; return; }
+  btn.disabled = true; st.style.color = 'var(--grey)'; st.textContent = 'Checking…';
+  try {
+    const email = CURRENT_USER?.email; if (!email) throw new Error('Cannot find your login email. Sign out and in again.');
+    const chk = await sb.auth.signInWithPassword({ email, password: old });
+    if (chk.error) throw new Error('Your current password is not correct.');
+    const { error } = await sb.auth.updateUser({ password: p1 });
+    if (error) throw error;
+    closeModal(); toast('Password changed.');
+  } catch(e) { btn.disabled = false; st.style.color = 'var(--bad)'; st.textContent = e.message; }
 }
 async function doSignOut(){
   if (!confirm('Sign out of ShiShenri Schools Management System?')) return;
@@ -548,8 +664,11 @@ async function onSignedIn(user){
 async function boot(){
   document.getElementById('signinLogo').src = LOGO_DATA_URI;
   document.getElementById('sidebarLogo').src = LOGO_DATA_URI;
+  document.getElementById('resetLogo').src = LOGO_DATA_URI;
   const verifyToken = new URLSearchParams(location.search).get('verify');
   if (verifyToken) { showVerifyPage(verifyToken); return; } // public ID-card check: no login needed
+  if (RECOVERY_LINK) { try { await sb.auth.getSession(); } catch(e) {} showRecovery(); return; } // arrived from a reset email
+  if (LINK_ERROR) { document.getElementById('signinError').textContent = decodeURIComponent(LINK_ERROR.replace(/\+/g, ' ')) + ' - request a new reset link below.'; }
   const { data: { session } } = await sb.auth.getSession();
   if (session && session.user) {
     await onSignedIn(session.user);
@@ -691,30 +810,37 @@ function renderComingSoon(){
 // =====================================================================
 async function renderDashboard(){
   await loadSettings();
+  closeOpenStaffDays(); // old unfinished staff days are closed by the system (throttled, silent)
   const term = SETTINGS_CACHE.current_term;
-  const { data: students } = await sb.from('students').select('*');
-  const { data: staff } = await sb.from('staff').select('*');
-  const active = (students||[]).filter(isActiveStudent);
-  const activeStaff = (staff||[]).filter(isActiveStaff);
+  const A = dashAllow;
+  const today = todayISO();
+  const showStudentCards = A('dash_students'), showEnrol = A('dash_enrolment'), showAbsence = A('dash_absence');
+  const showStaffCards = A('dash_staff'), showFees = A('dash_fees'), showMine = A('dash_my_summary');
+  const needStudents = showStudentCards || showEnrol || showAbsence;
+
+  let students = [], active = [], staff = [], activeStaff = [];
+  if (needStudents) { const r = await sb.from('students').select('*'); students = r.data || []; active = students.filter(isActiveStudent); }
+  if (showStaffCards && hasPerm('view_staff')) { const r = await sb.from('staff').select('*'); staff = r.data || []; activeStaff = staff.filter(isActiveStaff); }
   const bySection = { Nursery:0, Primary:0, Secondary:0 };
   const byGender = { Male:0, Female:0 };
   active.forEach(s => { const sec = feeSectionFor(s.class_id); bySection[sec] = (bySection[sec]||0)+1; if (s.gender) byGender[s.gender] = (byGender[s.gender]||0)+1; });
 
-  const today = todayISO();
-  const { data: todayAtt } = await sb.from('attendance').select('status').eq('date', today);
-  const present = (todayAtt||[]).filter(r=>r.status==='P').length;
-  const absent = (todayAtt||[]).filter(r=>r.status==='A').length;
-  const late = (todayAtt||[]).filter(r=>r.status==='L').length;
-  const marked = (todayAtt||[]).length;
-
-  const { data: staffAttToday } = await sb.from('staff_attendance').select('status').eq('date', today);
-  const staffPresent = (staffAttToday||[]).filter(r=>r.status==='P').length;
-  const staffAbsent = (staffAttToday||[]).filter(r=>r.status==='A').length;
-  const staffLate = (staffAttToday||[]).filter(r=>r.status==='L').length;
-  const staffMarked = (staffAttToday||[]).length;
+  let present = 0, absent = 0, late = 0, marked = 0;
+  if (showStudentCards) {
+    const { data: todayAtt } = await sb.from('attendance').select('status').eq('date', today);
+    present = (todayAtt||[]).filter(r=>r.status==='P').length; absent = (todayAtt||[]).filter(r=>r.status==='A').length;
+    late = (todayAtt||[]).filter(r=>r.status==='L').length; marked = (todayAtt||[]).length;
+  }
+  let staffPresent = 0, staffAbsent = 0, staffLate = 0, staffMarked = 0;
+  const showStaffAtt = showStaffCards && hasPerm('view_staff_attendance');
+  if (showStaffAtt) {
+    const { data: staffAttToday } = await sb.from('staff_attendance').select('status').eq('date', today);
+    staffPresent = (staffAttToday||[]).filter(r=>r.status==='P').length; staffAbsent = (staffAttToday||[]).filter(r=>r.status==='A').length;
+    staffLate = (staffAttToday||[]).filter(r=>r.status==='L').length; staffMarked = (staffAttToday||[]).length;
+  }
 
   let feeExpected = 0, feeCollected = 0;
-  if (term) {
+  if (term && showFees && hasPerm('view_fees') && needStudents) {
     active.forEach(s => feeExpected += expectedFeeTotal(s.class_id, s.fee_category));
     const ids = active.map(s=>s.id);
     if (ids.length) {
@@ -725,11 +851,14 @@ async function renderDashboard(){
   const feePct = feeExpected ? Math.round((feeCollected/feeExpected)*100) : 0;
 
   // Repeated-absence flags: 3 or more absences in the last 14 days
-  const since = new Date(Date.now() - 14*86400000).toISOString().slice(0,10);
-  const { data: recentAbs } = await sb.from('attendance').select('student_id').eq('status','A').gte('date', since);
-  const absCount = {};
-  (recentAbs||[]).forEach(r => { absCount[r.student_id] = (absCount[r.student_id]||0)+1; });
-  const flagged = Object.entries(absCount).filter(([,n])=>n>=3).map(([id,n])=>({ s: (students||[]).find(x=>x.id===id), n })).filter(x=>x.s && isActiveStudent(x.s)).sort((a,b)=>b.n-a.n);
+  let flagged = [];
+  if (showAbsence) {
+    const since = new Date(Date.now() - 14*86400000).toISOString().slice(0,10);
+    const { data: recentAbs } = await sb.from('attendance').select('student_id').eq('status','A').gte('date', since);
+    const absCount = {};
+    (recentAbs||[]).forEach(r => { absCount[r.student_id] = (absCount[r.student_id]||0)+1; });
+    flagged = Object.entries(absCount).filter(([,n])=>n>=3).map(([id,n])=>({ s: students.find(x=>x.id===id), n })).filter(x=>x.s && isActiveStudent(x.s)).sort((a,b)=>b.n-a.n);
+  }
 
   const isAdminView = ACCESS_MODE === 'rbac' ? hasPerm('view_management_dashboard') : legacyIsAdmin();
   let mgmtRow = '';
@@ -745,17 +874,19 @@ async function renderDashboard(){
     <div class="panel">
       <h2>Management Overview</h2>
       <div class="kpis">
-        <div class="kpi"><div class="label">Admissions in Pipeline</div><div class="value">${(admissionsPipeline||[]).length}</div></div>
-        <div class="kpi"><div class="label">Discipline Incidents Today</div><div class="value" style="color:${(disciplineToday||[]).length?'var(--warn)':'inherit'};">${(disciplineToday||[]).length}</div></div>
-        <div class="kpi"><div class="label">Open Safeguarding Items</div><div class="value" style="color:${(safeguardingOpen||[]).length?'var(--bad)':'inherit'};">${(safeguardingOpen||[]).length}</div></div>
-        <div class="kpi"><div class="label">Open Facility Issues</div><div class="value">${(inspectionsOpen||[]).length}</div></div>
-        <div class="kpi"><div class="label">Pending Procurement</div><div class="value">${(procurementPending||[]).length}</div></div>
-        <div class="kpi"><div class="label">Pending Staff Leave</div><div class="value">${(leavePending||[]).length}</div></div>
-        <div class="kpi"><div class="label">Staff Checked In Outside School Today</div><div class="value" style="color:${(outsideToday||[]).length?'var(--bad)':'inherit'};">${(outsideToday||[]).length}</div></div>
+        <div class="kpi clickable" onclick="dashOpen('admissions')"><div class="label">Admissions in Pipeline</div><div class="value">${(admissionsPipeline||[]).length}</div></div>
+        <div class="kpi clickable" onclick="dashOpen('discipline')"><div class="label">Discipline Incidents Today</div><div class="value" style="color:${(disciplineToday||[]).length?'var(--warn)':'inherit'};">${(disciplineToday||[]).length}</div></div>
+        <div class="kpi clickable" onclick="dashOpen('safeguarding')"><div class="label">Open Safeguarding Items</div><div class="value" style="color:${(safeguardingOpen||[]).length?'var(--bad)':'inherit'};">${(safeguardingOpen||[]).length}</div></div>
+        <div class="kpi clickable" onclick="dashOpen('inspections')"><div class="label">Open Facility Issues</div><div class="value">${(inspectionsOpen||[]).length}</div></div>
+        <div class="kpi clickable" onclick="dashOpen('procurement')"><div class="label">Pending Procurement</div><div class="value">${(procurementPending||[]).length}</div></div>
+        <div class="kpi clickable" onclick="dashOpen('leave')"><div class="label">Pending Staff Leave</div><div class="value">${(leavePending||[]).length}</div></div>
+        <div class="kpi clickable" onclick="dashOpen('outside')"><div class="label">Staff Checked In Outside School Today</div><div class="value" style="color:${(outsideToday||[]).length?'var(--bad)':'inherit'};">${(outsideToday||[]).length}</div></div>
       </div>
     </div>`;
   }
 
+  const mineHtml = showMine ? await mySummaryHtml() : '';
+  const anyKpi = showStudentCards || showStaffCards;
   return `
   <div class="panel" style="background:var(--navy);border:none;">
     <div class="row between">
@@ -764,19 +895,21 @@ async function renderDashboard(){
         <div style="color:rgba(255,255,255,.75);font-size:13px;">${esc(term||'No term set')} · Running on your own Supabase database</div>
       </div>
       <div class="row">
-        <button class="btn" style="background:var(--gold);border-color:var(--gold);color:#2b2100;" onclick="CUR_TAB='attendance';render();">&#128197; Take Attendance</button>
+        ${can('attendance') ? `<button class="btn" style="background:var(--gold);border-color:var(--gold);color:#2b2100;" onclick="CUR_TAB='attendance';render();">&#128197; Take Attendance</button>` : ''}
+        ${can('myAttendance') && MY_PROFILE?.staff_record_id ? `<button class="btn" style="background:var(--gold);border-color:var(--gold);color:#2b2100;" onclick="CUR_TAB='myAttendance';render();">&#128205; My Attendance</button>` : ''}
         ${can('fees')?`<button class="btn secondary" style="background:transparent;border-color:#fff;color:#fff;" onclick="CUR_TAB='fees';render();">&#8358; Fees</button>`:''}
       </div>
     </div>
   </div>
-  <div class="kpis">
-    <div class="kpi"><div class="label">Active Students</div><div class="value">${active.length}</div><div class="note">${bySection.Nursery} Nursery/PN · ${bySection.Primary} Primary · ${bySection.Secondary} JSS · ${byGender.Male||0}M / ${byGender.Female||0}F</div></div>
-    ${hasPerm('view_staff') ? `<div class="kpi"><div class="label">Active Staff</div><div class="value">${activeStaff.length}</div><div class="note">${(staff||[]).length - activeStaff.length} inactive/exited</div></div>` : ''}
-    <div class="kpi"><div class="label">Students Present Today</div><div class="value" style="color:var(--ok);">${present}</div><div class="note">${absent} absent · ${late} late · of ${marked}/${active.length} marked</div></div>
-    ${hasPerm('view_staff_attendance') ? `<div class="kpi"><div class="label">Staff Present Today</div><div class="value" style="color:var(--ok);">${staffPresent}</div><div class="note">${staffAbsent} absent · ${staffLate} late · of ${staffMarked}/${activeStaff.length} marked</div></div>` : ''}
-  </div>
-  ${term && hasPerm('view_fees') ? `
-  <div class="panel">
+  ${mineHtml}
+  ${anyKpi ? `<div class="kpis">
+    ${showStudentCards ? `<div class="kpi clickable" onclick="dashOpen('students')"><div class="label">Active Students</div><div class="value">${active.length}</div><div class="note">${bySection.Nursery} Nursery/PN · ${bySection.Primary} Primary · ${bySection.Secondary} JSS · ${byGender.Male||0}M / ${byGender.Female||0}F</div></div>` : ''}
+    ${showStaffCards && hasPerm('view_staff') ? `<div class="kpi clickable" onclick="dashOpen('staff')"><div class="label">Active Staff</div><div class="value">${activeStaff.length}</div><div class="note">${staff.length - activeStaff.length} inactive/exited</div></div>` : ''}
+    ${showStudentCards ? `<div class="kpi clickable" onclick="dashOpen('stuAtt')"><div class="label">Students Present Today</div><div class="value" style="color:var(--ok);">${present}</div><div class="note">${absent} absent · ${late} late · of ${marked}/${active.length} marked</div></div>` : ''}
+    ${showStaffAtt ? `<div class="kpi clickable" onclick="dashOpen('staffAtt')"><div class="label">Staff Present Today</div><div class="value" style="color:var(--ok);">${staffPresent}</div><div class="note">${staffAbsent} absent · ${staffLate} late · of ${staffMarked}/${activeStaff.length} marked</div></div>` : ''}
+  </div>` : ''}
+  ${term && showFees && hasPerm('view_fees') ? `
+  <div class="panel kpi clickable" style="padding:20px;" onclick="dashOpen('fees')">
     <h2>Fees This Term — ${esc(term)}</h2>
     <div class="row between" style="margin-bottom:8px;">
       <span class="desc" style="margin:0;">${naira(feeCollected)} collected of ${naira(feeExpected)} expected</span>
@@ -786,22 +919,178 @@ async function renderDashboard(){
   </div>` : ''}
   ${flagged.length ? `<div class="panel" style="border-left:4px solid var(--bad);">
     <h2>Repeated Absence — needs follow-up</h2>
-    <div class="desc">3 or more absences in the last 14 days.</div>
+    <div class="desc">3 or more absences in the last 14 days. Click a pupil to open the record.</div>
     <div class="tablewrap"><table>
       <tr><th>Pupil</th><th>Class</th><th class="right">Absences</th></tr>
-      ${flagged.map(f=>`<tr><td>${esc(f.s.name)}</td><td>${classById(f.s.class_id)?.name||''}</td><td class="right mono" style="color:var(--bad);">${f.n}</td></tr>`).join('')}
+      ${flagged.map(f=>`<tr class="dclick" onclick="dashGoStudent('${f.s.id}')"><td>${esc(f.s.name)}</td><td>${classById(f.s.class_id)?.name||''}</td><td class="right mono" style="color:var(--bad);">${f.n}</td></tr>`).join('')}
     </table></div>
   </div>` : ''}
   ${mgmtRow}
-  <div class="panel">
+  ${showEnrol ? `<div class="panel">
     <h2>Enrolment by class</h2>
+    <div class="desc">Click a class to see its pupils.</div>
     <div class="tablewrap"><table>
       <tr><th>Class</th><th>Section</th><th class="right">Active Pupils</th></tr>
-      ${CLASSES.map(cl => `<tr><td>${cl.name}</td><td>${cl.section}</td><td class="right mono">${active.filter(s=>s.class_id===cl.id).length}</td></tr>`).join('')}
+      ${CLASSES.map(cl => `<tr class="dclick" onclick="dashOpen('class','${cl.id}')"><td>${cl.name}</td><td>${cl.section}</td><td class="right mono">${active.filter(s=>s.class_id===cl.id).length}</td></tr>`).join('')}
     </table></div>
-  </div>
-  ${(students||[]).length===0 ? `<div class="bignote">No students yet — add your first one from the Students tab.</div>` : ''}
+  </div>` : ''}
+  ${showStudentCards && students.length===0 ? `<div class="bignote">No students yet — add your first one from the Students tab.</div>` : ''}
+  ${!mineHtml && !anyKpi && !showFees && !showEnrol && !isAdminView ? `<div class="panel"><div class="empty"><div class="big">&#9737;</div>Welcome. Your dashboard has no cards yet &mdash; ask the Proprietor which dashboard items you should see.</div></div>` : ''}
   `;
+}
+
+// ---------- who sees which dashboard card (set in Roles & Permissions) ----------
+let DASH_PERMS_ON = false;
+function dashAllow(k){ return !DASH_PERMS_ON || hasPerm(k); }
+
+// ---------- "My records" card for every logged-in staff member ----------
+function termWindow(){
+  const today = todayISO();
+  const start = SETTINGS_CACHE.term_start_date || null;
+  const end = SETTINGS_CACHE.term_end_date && SETTINGS_CACHE.term_end_date < today ? SETTINGS_CACHE.term_end_date : today;
+  if (start) return { from: start, to: end, exact: true };
+  return { from: daysAgoISO(90), to: today, exact: false };
+}
+async function mySummaryHtml(){
+  const sid = MY_PROFILE?.staff_record_id; if (!sid) return '';
+  await loadCareerRefs();
+  const w = termWindow();
+  const [st, pv, att] = await Promise.all([
+    sb.from('staff').select('name,date_joined,career_rank,role,department').eq('id', sid).maybeSingle(),
+    sb.from('staff_private').select('date_of_birth').eq('staff_id', sid).maybeSingle(),
+    sb.from('staff_attendance').select('status,date').eq('staff_id', sid).gte('date', w.from).lte('date', w.to)]);
+  const s = st.data; if (!s) return '';
+  const rows = att.data || [];
+  const n = c => rows.filter(r => r.status === c).length;
+  const dob = pv.data?.date_of_birth;
+  const rank = s.career_rank ? rankLabel(s.career_rank) : 'Not yet assigned';
+  const period = `${fmtDate(w.from)} to ${fmtDate(w.to)}`;
+  return `<div class="panel">
+    <h2>My records &mdash; ${esc(s.name)}</h2>
+    <div class="desc">${esc(SETTINGS_CACHE.current_term || 'This term')} &middot; ${period}${w.exact ? '' : ' (the last 90 days &mdash; Admin can set the term start date in Settings)'}. Click a number to see the days.</div>
+    <div class="kpis" style="margin-bottom:0;">
+      <div class="kpi clickable" onclick="dashOpen('myAtt','P')"><div class="label">Times present</div><div class="value" style="color:var(--ok);">${n('P')}</div></div>
+      <div class="kpi clickable" onclick="dashOpen('myAtt','L')"><div class="label">Times late</div><div class="value" style="color:var(--warn);">${n('L')}</div></div>
+      <div class="kpi clickable" onclick="dashOpen('myAtt','A')"><div class="label">Times absent</div><div class="value" style="color:var(--bad);">${n('A')}</div></div>
+      <div class="kpi"><div class="label">Date engaged</div><div class="value" style="font-size:18px;">${s.date_joined ? fmtDate(s.date_joined) : '&mdash;'}</div></div>
+      <div class="kpi"><div class="label">Date of birth</div><div class="value" style="font-size:18px;">${dob ? fmtDate(dob) : '&mdash;'}</div></div>
+      <div class="kpi"><div class="label">Current rank</div><div class="value" style="font-size:16px;line-height:1.3;">${esc(rank)}</div></div>
+    </div></div>`;
+}
+
+// ---------- details behind every dashboard card ----------
+let DASH = { kind: null, arg: null, date: null, status: '', q: '' };
+const DASH_NEEDS = { students:'view_students', staff:'view_staff', stuAtt:'view_attendance', staffAtt:'view_staff_attendance', outside:'view_staff_attendance',
+  fees:'view_fees', admissions:'view_admissions', discipline:'view_discipline', safeguarding:'view_safeguarding', inspections:'view_inspections',
+  procurement:'view_procurement', leave:'view_staff_leave', class:'view_students' };
+const fmtDist = m => m == null ? '—' : (m >= 1000 ? (m/1000).toFixed(1) + ' km' : Math.round(m) + ' m');
+function dashGo(tab){ closeModal(); CUR_TAB = tab; openStudentId = null; openStaffProfileId = null; renderNav(); render(); }
+function dashGoStudent(id){ if (!can('students')) return; closeModal(); CUR_TAB = 'students'; openStudentId = id; renderNav(); render(); }
+function dashGoStaff(id){ if (!can('staff')) return; closeModal(); CUR_TAB = 'staff'; openStaffProfileId = id; renderNav(); render(); }
+async function dashOpen(kind, arg){
+  const need = DASH_NEEDS[kind];
+  if (need && ACCESS_MODE === 'rbac' && !hasPerm(need)) { toast('Your role does not include access to these details.'); return; }
+  DASH = { kind, arg: arg || null, date: todayISO(), status: '', q: '' };
+  await dashRefresh();
+}
+async function dashRefresh(){
+  openModal(`<div class="empty"><div class="big">&#9203;</div>Loading…</div>`, true);
+  let out;
+  try { out = await dashBody(); } catch(e) { out = { title: 'Details', body: `<div class="empty" style="color:var(--bad);">Could not load: ${esc(e.message)}</div>` }; }
+  const dateCtl = out.date ? `<label class="desc" style="margin:0;">Date <input type="date" value="${DASH.date}" max="${todayISO()}" style="width:auto;display:inline-block;" onchange="DASH.date=this.value||todayISO();dashRefresh();"></label>` : '';
+  openModal(`<div class="row between" style="margin-bottom:8px;"><h3 style="margin:0;">${out.title}</h3><button class="btn ghost small" onclick="closeModal()">Close</button></div>
+    ${out.sub ? `<div class="msub">${out.sub}</div>` : ''}
+    <div class="row" style="margin:10px 0;flex-wrap:wrap;gap:8px;">${dateCtl}${out.controls || ''}</div>
+    ${out.body}
+    ${out.go ? `<div class="mfoot"><button class="btn secondary" onclick="dashGo('${out.go[0]}')">${out.go[1]} &rarr;</button></div>` : ''}`, true);
+}
+function dashSearchBox(){ return `<input placeholder="Search…" value="${esc(DASH.q)}" oninput="DASH.q=this.value;dashFilterRows();" style="width:200px;">`; }
+function dashFilterRows(){
+  const q = (DASH.q || '').toLowerCase();
+  document.querySelectorAll('#dashTable tr[data-s]').forEach(tr => { tr.style.display = !q || tr.dataset.s.includes(q) ? '' : 'none'; });
+}
+const dtable = (heads, rowsHtml, empty) => rowsHtml ? `<div class="tablewrap"><table id="dashTable"><tr>${heads.map(h => `<th>${h}</th>`).join('')}</tr>${rowsHtml}</table></div>` : `<div class="empty">${empty || 'Nothing to show.'}</div>`;
+const spill = st => ({ P:'<span class="pill ok">Present</span>', L:'<span class="pill warn">Late</span>', A:'<span class="pill bad">Absent</span>' }[st] || '<span class="pill muted">Not marked</span>');
+
+async function dashBody(){
+  const k = DASH.kind, d = DASH.date;
+  if (k === 'students' || k === 'class') {
+    const { data } = await sb.from('students').select('*').order('name');
+    let list = (data || []).filter(isActiveStudent);
+    if (k === 'class') list = list.filter(s => s.class_id === DASH.arg);
+    list.sort((a,b) => CLASSES.findIndex(c => c.id === a.class_id) - CLASSES.findIndex(c => c.id === b.class_id) || (a.name||'').localeCompare(b.name||''));
+    const rows = list.map(s => `<tr class="dclick" data-s="${esc(((s.name||'')+' '+(s.student_id||'')+' '+(classById(s.class_id)?.name||'')).toLowerCase())}" onclick="dashGoStudent('${s.id}')"><td>${esc(s.name)}</td><td class="mono">${esc(s.student_id||'—')}</td><td>${esc(classById(s.class_id)?.name||'')}</td><td>${esc(s.gender||'')}</td><td>${esc(s.parent_phone||'')}</td></tr>`).join('');
+    return { title: k === 'class' ? `${esc(classById(DASH.arg)?.name || 'Class')} &mdash; ${list.length} pupil(s)` : `Active students &mdash; ${list.length}`, sub: 'Click a pupil to open the record.', controls: dashSearchBox(), body: dtable(['Name','Student ID','Class','Gender','Parent phone'], rows, 'No students.'), go: ['students','Open Students'] };
+  }
+  if (k === 'staff') {
+    const { data } = await sb.from('staff').select('*').order('name'); await loadCareerRefs();
+    const list = (data || []).filter(isActiveStaff);
+    const rows = list.map(s => `<tr class="dclick" data-s="${esc(((s.name||'')+' '+(s.staff_id||'')+' '+(s.role||'')+' '+(s.department||'')).toLowerCase())}" onclick="dashGoStaff('${s.id}')"><td>${esc(s.name)}</td><td class="mono">${esc(s.staff_id||'—')}</td><td>${esc(s.role||'')}</td><td>${esc(s.department||'')}</td><td>${s.career_rank ? esc(rankObj(s.career_rank)?.code||'') : '—'}</td></tr>`).join('');
+    return { title: `Active staff &mdash; ${list.length}`, sub: 'Click a person to open the profile.', controls: dashSearchBox(), body: dtable(['Name','Staff ID','Job title','Department','Grade'], rows, 'No staff.'), go: ['staff','Open Staff'] };
+  }
+  if (k === 'stuAtt') {
+    const [st, at] = await Promise.all([sb.from('students').select('id,name,student_id,class_id,status').order('name'), sb.from('attendance').select('*').eq('date', d)]);
+    const byId = {}; (at.data || []).forEach(r => { byId[r.student_id] = r; });
+    let list = (st.data || []).filter(isActiveStudent).map(s => ({ s, r: byId[s.id] }));
+    const f = DASH.status;
+    if (f) list = list.filter(x => (x.r?.status || 'U') === f);
+    list.sort((a,b) => CLASSES.findIndex(c => c.id === a.s.class_id) - CLASSES.findIndex(c => c.id === b.s.class_id) || (a.s.name||'').localeCompare(b.s.name||''));
+    const rows = list.map(({ s, r }) => `<tr class="dclick" data-s="${esc(((s.name||'')+' '+(classById(s.class_id)?.name||'')).toLowerCase())}" onclick="dashGoStudent('${s.id}')"><td>${esc(s.name)}</td><td>${esc(classById(s.class_id)?.name||'')}</td><td>${spill(r?.status)}</td><td class="mono">${r?.time ? String(r.time).slice(0,5) : '—'}</td><td>${esc(r?.reason||'')}</td></tr>`).join('');
+    const sel = `<select onchange="DASH.status=this.value;dashRefresh();">${[['','All'],['P','Present'],['A','Absent'],['L','Late'],['U','Not marked']].map(([v,l]) => `<option value="${v}" ${DASH.status===v?'selected':''}>${l}</option>`).join('')}</select>`;
+    return { title: `Student attendance &mdash; ${fmtDate(d)}`, date: true, sub: `${list.length} pupil(s) shown`, controls: sel + dashSearchBox(), body: dtable(['Pupil','Class','Status','Time marked','Reason'], rows, 'No pupils match.'), go: ['attendance','Open Students Attendance'] };
+  }
+  if (k === 'staffAtt' || k === 'outside') {
+    const [st, at] = await Promise.all([sb.from('staff').select('id,name,staff_id,role,status').order('name'), sb.from('staff_attendance').select('*').eq('date', d)]);
+    const byId = {}; (at.data || []).forEach(r => { byId[r.staff_id] = r; });
+    const nameOf = {}; (st.data || []).forEach(s => { nameOf[s.id] = s; });
+    const isOut = r => r && (r.check_in_within === false || r.check_out_within === false);
+    if (k === 'outside') {
+      const list = (at.data || []).filter(isOut).sort((a,b) => (nameOf[a.staff_id]?.name||'').localeCompare(nameOf[b.staff_id]?.name||''));
+      const rows = list.map(r => `<tr class="dclick" data-s="${esc((nameOf[r.staff_id]?.name||'').toLowerCase())}" onclick="dashGoStaff('${r.staff_id}')"><td><strong>${esc(nameOf[r.staff_id]?.name || '—')}</strong><div style="font-size:11px;color:var(--grey);">${esc(nameOf[r.staff_id]?.role||'')}</div></td>
+        <td class="mono">${clock5(r.time_in)}${r.check_in_within === false ? '' : ' <span style="color:var(--ok);">(at school)</span>'}</td><td>${r.check_in_at ? fmtDist(r.check_in_distance_m) : '—'}</td><td onclick="event.stopPropagation()">${mapLink(r.check_in_lat, r.check_in_lng) || '—'}</td>
+        <td class="mono">${r.time_out ? clock5(r.time_out) : '—'}${r.check_out_within === false ? '' : (r.check_out_at ? ' <span style="color:var(--ok);">(at school)</span>' : '')}</td><td>${r.check_out_at ? fmtDist(r.check_out_distance_m) : '—'}</td><td onclick="event.stopPropagation()">${mapLink(r.check_out_lat, r.check_out_lng) || '—'}</td></tr>`).join('');
+      return { title: `Staff who were outside school &mdash; ${fmtDate(d)}`, date: true, sub: `${list.length} person(s). Distance is measured from the school location set in Settings.`, controls: dashSearchBox(),
+        body: dtable(['Name','Time in','Distance (in)','Map (in)','Time out','Distance (out)','Map (out)'], rows, 'Nobody was recorded outside the school on this date.'), go: ['reports','Open Reports (Outside school only filter)'] };
+    }
+    let list = (st.data || []).filter(isActiveStaff).map(s => ({ s, r: byId[s.id] }));
+    const f = DASH.status;
+    if (f === 'OUT') list = list.filter(x => isOut(x.r)); else if (f) list = list.filter(x => (x.r?.status || 'U') === f);
+    const rows = list.map(({ s, r }) => `<tr class="dclick" data-s="${esc((s.name||'').toLowerCase())}" onclick="dashGoStaff('${s.id}')"><td><strong>${esc(s.name)}</strong><div style="font-size:11px;color:var(--grey);">${esc(s.role||'')}</div></td><td>${spill(r?.status)}</td><td class="mono">${clock5(r?.time_in)}</td><td class="mono">${clock5(r?.time_out)}</td>
+      <td onclick="event.stopPropagation()">${r?.check_in_at ? locBadge(r.check_in_within, r.check_in_distance_m) + ' ' + mapLink(r.check_in_lat, r.check_in_lng) : (r ? '<span class="pill muted">marked by Admin</span>' : '')}</td></tr>`).join('');
+    const sel = `<select onchange="DASH.status=this.value;dashRefresh();">${[['','All'],['P','Present'],['L','Late'],['A','Absent'],['U','Not marked'],['OUT','Outside school']].map(([v,l]) => `<option value="${v}" ${DASH.status===v?'selected':''}>${l}</option>`).join('')}</select>`;
+    return { title: `Staff attendance &mdash; ${fmtDate(d)}`, date: true, sub: `${list.length} person(s) shown`, controls: sel + dashSearchBox(), body: dtable(['Name','Status','Time in','Time out','Location'], rows, 'No staff match.'), go: ['staffAttendance','Open Staff Attendance'] };
+  }
+  if (k === 'fees') {
+    const term = SETTINGS_CACHE.current_term;
+    const { data: sd } = await sb.from('students').select('id,class_id,fee_category,status'); const act = (sd || []).filter(isActiveStudent);
+    const { data: pay } = act.length ? await sb.from('fee_payments').select('student_id,amount').in('student_id', act.map(s => s.id)).eq('term', term) : { data: [] };
+    const paid = {}; (pay || []).forEach(p => { paid[p.student_id] = (paid[p.student_id] || 0) + Number(p.amount); });
+    let te = 0, tc = 0;
+    const rows = CLASSES.map(c => { const ss = act.filter(s => s.class_id === c.id); if (!ss.length) return '';
+      const exp = ss.reduce((a, s) => a + expectedFeeTotal(s.class_id, s.fee_category), 0), col = ss.reduce((a, s) => a + (paid[s.id] || 0), 0); te += exp; tc += col;
+      return `<tr><td>${c.name}</td><td class="right mono">${ss.length}</td><td class="right mono">${naira(exp)}</td><td class="right mono">${naira(col)}</td><td class="right mono" style="color:${exp-col>0?'var(--bad)':'var(--ok)'};">${naira(exp-col)}</td><td class="right mono">${exp ? Math.round(100*col/exp) : 0}%</td></tr>`; }).join('');
+    return { title: `Fees by class &mdash; ${esc(term)}`, sub: `${naira(tc)} collected of ${naira(te)} expected.`, body: dtable(['Class','Pupils','Expected','Collected','Outstanding','%'], rows, 'No data.').replace(/<th>(Pupils|Expected|Collected|Outstanding|%)<\/th>/g, '<th class="right">$1</th>'), go: ['fees','Open Fees'] };
+  }
+  const mod = async (table, filterFn, cols, title, tab, label, sub) => {
+    let q = sb.from(table).select('*').order('created_at', { ascending: false }); q = filterFn(q);
+    const { data, error } = await q; if (error) throw error;
+    const m = GENERIC_MODULES[tab];
+    const rows = (data || []).map(r => `<tr>${cols.map(c => `<td>${c === 'estimated_cost' ? naira(r[c]) : esc(r[c] ?? '—')}</td>`).join('')}</tr>`).join('');
+    return { title: `${title} &mdash; ${(data||[]).length}`, sub, body: dtable(cols.map(c => esc(m?.fields.find(f => f.key === c)?.label || c.replace(/_/g,' '))), rows, 'Nothing to show.'), go: [tab, label] };
+  };
+  if (k === 'inspections') return mod('inspections', q => q.neq('status','Resolved'), ['date','area','status','due_date','action_needed'], 'Open facility issues', 'inspections', 'Open Facility Inspection');
+  if (k === 'procurement') return mod('procurement', q => q.eq('status','Requested'), ['date','item','quantity','estimated_cost','requested_by'], 'Pending procurement requests', 'procurement', 'Open Procurement');
+  if (k === 'leave') return mod('staff_leave', q => q.eq('status','Pending'), ['staff_name','type','start_date','end_date','reason'], 'Pending staff leave', 'staffLeave', 'Open Staff Leave & Cover');
+  if (k === 'safeguarding') return mod('safeguarding', q => q.neq('status','Closed'), ['date','student_name','concern_type','status'], 'Open safeguarding items', 'safeguarding', 'Open Safeguarding', 'Confidential &mdash; details are in the Safeguarding tab.');
+  if (k === 'discipline') { const r = await mod('discipline', q => q.eq('date', d), ['student_name','category','description','action_taken'], 'Discipline incidents', 'discipline', 'Open Discipline & Welfare'); r.title = `Discipline incidents &mdash; ${fmtDate(d)}`; r.date = true; return r; }
+  if (k === 'admissions') return mod('admissions', q => q.neq('status','Enrolled').neq('status','Declined'), ['name','admission_form_number','class_applied_for','status','parent_phone'], 'Admissions in pipeline', 'admissions', 'Open Admissions');
+  if (k === 'myAtt') {
+    const w = termWindow(); const sid = MY_PROFILE?.staff_record_id;
+    const { data } = await sb.from('staff_attendance').select('*').eq('staff_id', sid).eq('status', DASH.arg).gte('date', w.from).lte('date', w.to).order('date', { ascending: false });
+    const rows = (data || []).map(r => `<tr><td class="mono">${fmtDate(r.date)}</td><td>${spill(r.status)}</td><td class="mono">${clock5(r.time_in)}</td><td class="mono">${clock5(r.time_out)}</td><td>${esc(r.reason||'')}</td></tr>`).join('');
+    return { title: `My days: ${statusWord(DASH.arg)} &mdash; ${(data||[]).length}`, sub: `${fmtDate(w.from)} to ${fmtDate(w.to)}`, body: dtable(['Date','Status','Time in','Time out','Reason'], rows, 'None in this period.') };
+  }
+  return { title: 'Details', body: '<div class="empty">Nothing to show.</div>' };
 }
 
 
@@ -817,22 +1106,32 @@ async function fetchStudents(){
   if (error) { toast('Could not load students: ' + error.message); return []; }
   return data || [];
 }
-async function nextStudentId(){
+// The suggested number is simply the LOWEST NUMBER NOT CURRENTLY IN USE. Opening a form and cancelling
+// reserves nothing, and a number freed by deleting a record is offered again. (The database also refuses duplicates.)
+async function lowestFreeNumber(kind){
   const year = new Date().getFullYear();
-  const n = await bumpCounter('studentId_' + year);
-  return `SHS/${year}/${String(n).padStart(3,'0')}`;
+  try {
+    const { data, error } = await sb.rpc('next_free_number', { p_kind: kind, p_year: year });
+    if (!error && data) return data;
+  } catch(e) {}
+  // fallback when the database function is not installed yet: look at the records this login can see
+  const pad = n => String(n).padStart(3,'0');
+  const nums = (rows, prefix) => new Set((rows||[]).map(v => String(v||'')).filter(v => v.startsWith(prefix) && /^\d+$/.test(v.slice(prefix.length))).map(v => Number(v.slice(prefix.length))));
+  const lowest = (set) => { let n = 1; while (set.has(n)) n++; return n; };
+  if (kind === 'student') { const p = `SHS/${year}/`; const { data } = await sb.from('students').select('student_id'); return p + pad(lowest(nums((data||[]).map(r=>r.student_id), p))); }
+  if (kind === 'staff') { const p = 'SHS/STF/'; const { data } = await sb.from('staff').select('staff_id'); return p + pad(lowest(nums((data||[]).map(r=>r.staff_id), p))); }
+  const p = `SS/ADM/${year}/`;
+  const [a, b] = await Promise.all([sb.from('students').select('admission_form_number'), sb.from('admissions').select('admission_form_number')]);
+  return p + pad(lowest(nums([...(a.data||[]).map(r=>r.admission_form_number), ...(b.data||[]).map(r=>r.admission_form_number)], p)));
 }
-async function nextAdmissionFormNumber(){
-  const year = new Date().getFullYear();
-  const n = await bumpCounter('admissionForm_' + year);
-  return `SS/ADM/${year}/${String(n).padStart(3,'0')}`;
-}
+async function nextStudentId(){ return lowestFreeNumber('student'); }
+async function nextAdmissionFormNumber(){ return lowestFreeNumber('admission'); }
 
 async function renderStudents(){
-  const myClasses = visibleClasses();
-  const scoped = isScopedRole() && myAssignedClasses();
+  const myClasses = visibleClasses('students');
+  const scoped = isScopedRole('students') && myAssignedClasses('students');
   let rows = await fetchStudents();
-  if (scoped) rows = rows.filter(s => myAssignedClasses().includes(s.class_id));
+  if (scoped) rows = rows.filter(s => myAssignedClasses('students').includes(s.class_id));
   rows = rows.filter(s => studentFilter.classId === 'ALL' || s.class_id === studentFilter.classId)
               .filter(s => !studentFilter.q || (s.name||'').toLowerCase().includes(studentFilter.q.toLowerCase()));
   VISIBLE_STUDENT_IDS = rows.map(s => s.id);
@@ -874,7 +1173,7 @@ function openStudent(id){ openStudentId = id; render(); }
 async function renderStudentDetail(){
   const { data: s, error } = await sb.from('students').select('*').eq('id', openStudentId).maybeSingle();
   if (error || !s) return `<div class="panel"><div class="empty">Student not found.</div></div>`;
-  if (!canAccessClass(s.class_id)) return `<div class="panel"><div class="empty">That student is not in one of your assigned classes.</div></div>`;
+  if (!canAccessClass(s.class_id, 'students')) return `<div class="panel"><div class="empty">That student is not in one of your assigned classes.</div></div>`;
   return `
   <button class="btn ghost small" onclick="openStudentId=null;render();" style="margin-bottom:14px;">&larr; Back to Students</button>
   <div class="panel">
@@ -1023,6 +1322,11 @@ async function saveStudent(existingId){
     closeModal(); toast('Student saved.'); renderTabAsync();
   } catch(e) {
     btn.disabled = false;
+    if (!existingId && /duplicate key.*(student_id|admission_form_number)/.test(e.message)) {
+      // someone else saved that number a moment ago: show the next free one
+      try { document.getElementById('f_studentid').value = await nextStudentId(); document.getElementById('f_admform').value = await nextAdmissionFormNumber(); } catch(_) {}
+      statusEl.textContent = 'Someone else had just taken that number. The form now shows the next free number - press Save again.'; return;
+    }
     statusEl.textContent = /duplicate key.*student_id/.test(e.message) ? 'That Student ID is already taken.'
       : /duplicate key.*admission_form_number/.test(e.message) ? 'That Admission Form Number is already taken.'
       : 'Could not save: ' + e.message;
@@ -1174,8 +1478,8 @@ let ATT_ROSTER = [];   // students in the current class
 let ATT_ROWS = {};     // student_id -> attendance row for the current class/date
 
 async function renderAttendance(){
-  const myClasses = visibleClasses();
-  if (!canAccessClass(attState.classId) && myClasses.length) attState.classId = myClasses[0].id;
+  const myClasses = visibleClasses('attendance');
+  if (!canAccessClass(attState.classId, 'attendance') && myClasses.length) attState.classId = myClasses[0].id;
   if (myClasses.length === 0) return `<div class="panel"><div class="empty">No classes are assigned to you yet.</div></div>`;
 
   const { data: students } = await sb.from('students').select('*').eq('class_id', attState.classId);
@@ -1234,7 +1538,7 @@ function attPayload(row){
 }
 async function markAttendance(studentId, status, btnEl){
   if (ATT_LOCKED) { toast('This register has been submitted and is locked.'); return; }
-  if (!canAccessClass(attState.classId)) { toast('This class is not assigned to you.'); return; }
+  if (!canAccessClass(attState.classId, 'attendance')) { toast('This class is not assigned to you.'); return; }
   // Optimistic UI: update the button instantly, then write to the database.
   if (btnEl && btnEl.parentElement) {
     Array.from(btnEl.parentElement.children).forEach(b => b.classList.remove('on','P','A','L'));
@@ -1356,6 +1660,9 @@ function getSubjects(section){
 async function renderSettingsTab(){
   await loadSettings();
   const { data: profiles } = await sb.from('profiles').select('*').order('name');
+  const { data: staffAll } = await sb.from('staff').select('id,name,staff_id');
+  const staffById = {}; (staffAll || []).forEach(s => { staffById[s.id] = s; });
+  const loginName = p => { const s = staffById[p.staff_record_id]; return (!p.name || looksLikeUid(p.name)) ? (s ? s.name : null) : p.name; };
   return `
   <div class="panel">
     <h2>Current Term</h2>
@@ -1366,6 +1673,7 @@ async function renderSettingsTab(){
       <div class="field"><label>Which term is this?</label><select id="set_termno"><option value="">— choose —</option>${[1,2,3].map(n=>`<option value="${n}" ${SETTINGS_CACHE.term_number===n?'selected':''}>${['First','Second','Third'][n-1]} Term</option>`).join('')}</select><div style="font-size:11px;color:var(--grey);margin-top:3px;">Set this properly: when you later switch to First Term of a NEW session, the system prepares class promotions from the Third Term results.</div></div>
     </div>
     <div class="fgrid">
+      ${'term_start_date' in SETTINGS_CACHE ? `<div class="field"><label>Term Began</label><input id="set_termstart" type="date" value="${SETTINGS_CACHE.term_start_date||''}"><div style="font-size:11px;color:var(--grey);margin-top:3px;">Used for each staff member's present / late / absent count on their dashboard.</div></div>` : ''}
       <div class="field"><label>Term Ending</label><input id="set_termend" type="date" value="${SETTINGS_CACHE.term_end_date||''}"></div>
       <div class="field"><label>Next Term Begins</label><input id="set_nextterm" type="date" value="${SETTINGS_CACHE.next_term_begins||''}"></div>
     </div>
@@ -1392,9 +1700,10 @@ async function renderSettingsTab(){
     </div>
     <button class="btn small" onclick="openAddProfileForm()">+ Add Staff Login</button>
     <div class="tablewrap" style="margin-top:12px;"><table>
-      <tr><th>Name</th><th>Role</th><th>Classes Assigned</th><th></th></tr>
+      <tr><th>Name</th><th>Staff ID</th><th>Role</th><th>Classes Assigned</th><th></th></tr>
       ${(profiles||[]).map(p => `<tr>
-        <td>${esc(p.name)}</td>
+        <td>${loginName(p) ? esc(loginName(p)) : '<span style="color:var(--bad);">name missing &mdash; press Edit</span>'}</td>
+        <td class="mono">${esc(staffById[p.staff_record_id]?.staff_id || '—')}</td>
         <td>${esc(ROLE_LABELS[p.role]||p.role)}</td>
         <td>${(p.classes_assigned||[]).map(c=>classById(c)?.name||c).join(', ')||'—'}</td>
         <td class="right"><button class="iconbtn" onclick='openEditProfileRole(${JSON.stringify(p).replace(/'/g,"&apos;")})'>Edit</button></td>
@@ -1410,16 +1719,22 @@ async function renderSettingsTab(){
   </div>`;
 }
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const looksLikeUid = v => UUID_RE.test(String(v || '').trim());
 async function openAddProfileForm(){
-  const { data: staffList } = await sb.from('staff').select('id,name,staff_id').order('name');
+  const [{ data: staffList }, { data: profs }] = await Promise.all([sb.from('staff').select('id,name,staff_id,status').order('name'), sb.from('profiles').select('staff_record_id')]);
+  const hasLogin = new Set((profs || []).map(p => p.staff_record_id).filter(Boolean));
+  const items = (staffList || []).filter(isActiveStaff).filter(s => !hasLogin.has(s.id)).map(s => ({ value: s.id, label: `${s.name}${s.staff_id ? ' (' + s.staff_id + ')' : ''}` }));
+  items.push({ value: '__new', label: '✎ Not registered yet — type the name' });
+  window.ssChange_ap_staff = (v) => { document.getElementById('ap_name_wrap').style.display = v === '__new' ? '' : 'none'; };
   openModal(`
     <h3>Add Staff Login</h3>
     <div class="msub">Use this only AFTER creating the login in Supabase (Authentication &rarr; Users). Paste their User UID from there.</div>
     <div class="field"><label>User UID (from Supabase)</label><input id="ap_uid" placeholder="e.g. 3fa1c2e0-1234-4a9b-8b21-abcdef123456" style="font-family:monospace;font-size:12.5px;"></div>
-    <div class="field"><label>Full Name</label><input id="ap_name"></div>
-    <div class="field"><label>Role</label><select id="ap_role">${roleOptionsHtml('')}</select></div>
-    <div class="field"><label>Linked staff record <span style="font-weight:400;color:var(--grey);">(needed for Check-in and the Welcome-page photo)</span></label>
-      <select id="ap_staff"><option value="">— not linked —</option>${(staffList||[]).map(s=>`<option value="${s.id}">${esc(s.name)} ${s.staff_id?'('+esc(s.staff_id)+')':''}</option>`).join('')}</select></div>
+    <div class="field"><label>Staff member</label>${ssHtml('ap_staff', items, '', 'Pick from registered staff (type to search)…')}
+      <div style="font-size:11px;color:var(--grey);margin-top:3px;">Registered staff who already have a login are not listed. Choose the last option only if the person has not been registered under Staff yet.</div></div>
+    <div class="field" id="ap_name_wrap" style="display:none;"><label>Full Name (only for someone not yet registered)</label><input id="ap_name"></div>
+    <div class="field"><label>Role</label><select id="ap_role" onchange="renderPermPicker('ap')">${roleOptionsHtml('')}</select></div>
+    <div id="ap_perm"></div>
     <div class="field"><label>Classes Assigned (Teachers: they will see ONLY these classes)</label>
       <div class="tablewrap" style="max-height:140px;overflow-y:auto;border:1px solid var(--line);border-radius:7px;padding:8px 12px;">
         ${CLASSES.map(c => `<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 10px 3px 0;font-size:12.5px;"><input type="checkbox" class="ap_class_cb" value="${c.id}" style="width:auto;">${c.name}</label>`).join('')}
@@ -1430,16 +1745,21 @@ async function openAddProfileForm(){
       <button class="btn secondary" onclick="closeModal()">Cancel</button>
       <button class="btn" id="apSaveBtn" onclick="saveNewProfile()">Add</button>
     </div>
-  `);
+  `, true);
+  renderPermPicker('ap', { current: { denied: new Set(), granted: new Set(), id: {} } });
 }
 async function saveNewProfile(){
   const btn = document.getElementById('apSaveBtn');
   const statusEl = document.getElementById('apStatus');
   const uid = document.getElementById('ap_uid').value.trim();
-  const name = document.getElementById('ap_name').value.trim();
+  const pick = document.getElementById('ap_staff').value;
   if (!UUID_RE.test(uid)) { statusEl.textContent = 'That doesn\'t look like a User UID — copy it from Supabase (Authentication → Users → click the person). It should look like 3fa1c2e0-1234-4a9b-8b21-abcdef123456.'; return; }
+  if (!pick) { statusEl.textContent = 'Choose the staff member from the list (or the "Not registered yet" option).'; return; }
+  const staffRecordId = pick === '__new' ? null : pick;
+  let name = document.getElementById('ap_name').value.trim();
+  if (staffRecordId) { const { data: st0 } = await sb.from('staff').select('name').eq('id', staffRecordId).maybeSingle(); name = st0?.name || name; }
   if (!name) { statusEl.textContent = 'Enter their name.'; return; }
-  const staffRecordId = document.getElementById('ap_staff').value || null;
+  if (looksLikeUid(name)) { statusEl.textContent = 'That looks like a User UID, not a name. Type the person\'s real name.'; return; }
   const classesAssigned = Array.from(document.querySelectorAll('.ap_class_cb:checked')).map(el=>el.value);
   btn.disabled = true; statusEl.textContent = 'Saving…';
   try {
@@ -1451,7 +1771,10 @@ async function saveNewProfile(){
     const { error } = await sb.from('profiles').insert(patch);
     if (error) throw error;
     await logAudit('create', 'staff_login', uid, { name, role: patch.role });
-    closeModal(); toast(name + ' can now sign in.'); renderTabAsync();
+    let note = '';
+    try { const s = await applyPermPicker('ap', { userId: uid, staffId: staffRecordId }); if (s) note = ' (' + s + ')'; }
+    catch(pe) { toast('Login created, but the privilege changes were not saved: ' + pe.message); }
+    closeModal(); toast(name + ' can now sign in.' + note); renderTabAsync();
   } catch(e) {
     btn.disabled = false;
     statusEl.textContent = /duplicate key/.test(e.message) ? 'That login already has a profile — use Edit on their row instead.'
@@ -1461,9 +1784,14 @@ async function saveNewProfile(){
 }
 async function openEditProfileRole(p){
   const { data: staffList } = await sb.from('staff').select('id,name,staff_id').order('name');
+  const linked = (staffList || []).find(s => s.id === p.staff_record_id);
+  const shownName = looksLikeUid(p.name) ? (linked?.name || '') : p.name;
+  const cur = ACCESS_MODE === 'rbac' ? await loadCurrentOverrides({ userId: p.id, staffId: p.staff_record_id }).catch(() => null) : null;
   openModal(`
-    <h3>${esc(p.name)}</h3>
-    <div class="field"><label>Role</label><select id="ep_role">${roleOptionsHtml(p.role)}</select></div>
+    <h3>${esc(shownName || 'Staff login')}</h3>
+    <div class="field"><label>Display name ${looksLikeUid(p.name) ? '<span style="color:var(--bad);font-weight:400;">(the saved name was a User UID &mdash; please correct it)</span>' : ''}</label><input id="ep_name" value="${esc(shownName)}"></div>
+    <div class="field"><label>Role</label><select id="ep_role" onchange="renderPermPicker('ep')">${roleOptionsHtml(p.role)}</select></div>
+    <div id="ep_perm"></div>
     <div class="field"><label>Linked staff record <span style="font-weight:400;color:var(--grey);">(needed for Check-in and for the Welcome-page photo)</span></label>
       <select id="ep_staff"><option value="">— not linked —</option>${(staffList||[]).map(s=>`<option value="${s.id}" ${p.staff_record_id===s.id?'selected':''}>${esc(s.name)} ${s.staff_id?'('+esc(s.staff_id)+')':''}</option>`).join('')}</select></div>
     <div class="field"><label>Classes Assigned (Teachers: they will see ONLY these classes)</label>
@@ -1477,13 +1805,16 @@ async function openEditProfileRole(p){
       <button class="btn secondary" onclick="closeModal()">Cancel</button>
       <button class="btn" onclick="saveProfileRole('${p.id}')">Save</button>
     </div>
-  `);
+  `, true);
+  if (cur) renderPermPicker('ep', { current: cur });
 }
 async function saveProfileRole(profileId){
   const role = document.getElementById('ep_role').value;
   const classesAssigned = Array.from(document.querySelectorAll('.ep_class_cb:checked')).map(el=>el.value);
   const staffRecordId = document.getElementById('ep_staff').value || null;
   const patch = { role, classes_assigned: classesAssigned, staff_record_id: staffRecordId };
+  const newName = (document.getElementById('ep_name')?.value || '').trim();
+  if (newName) { if (looksLikeUid(newName)) { toast('That looks like a User UID, not a name.'); return; } patch.name = newName; }
   if (ACCESS_MODE === 'rbac') { patch.sections_assigned = [...document.querySelectorAll('.ep_sec_cb:checked')].map(e => e.value); patch.departments_assigned = (document.getElementById('ep_dept')?.value || '').split(',').map(x => x.trim()).filter(Boolean); }
   try {
     if (staffRecordId) {
@@ -1493,6 +1824,8 @@ async function saveProfileRole(profileId){
     const { error } = await sb.from('profiles').update(patch).eq('id', profileId);
     if (error) throw error;
     await logAudit('update', 'staff_login_role', profileId, { role, classes_assigned: classesAssigned, staff_record_id: staffRecordId });
+    try { const s = await applyPermPicker('ep', { userId: profileId, staffId: staffRecordId }); if (s) toast('Access updated: ' + s); }
+    catch(pe) { toast('Saved, but the privilege changes were not applied: ' + pe.message); }
     if (MY_PROFILE && MY_PROFILE.id === profileId) { Object.assign(MY_PROFILE, patch); renderNav(); }
     closeModal(); toast('Updated.'); renderTabAsync();
   } catch(e){ toast('Could not save: ' + e.message); }
@@ -1560,6 +1893,7 @@ async function saveTerm(){
     term_end_date: document.getElementById('set_termend').value || null,
     next_term_begins: document.getElementById('set_nextterm').value || null,
   };
+  if (document.getElementById('set_termstart')) payload.term_start_date = document.getElementById('set_termstart').value || null;
   if (termNumber === 3) payload.third_term_label = val; // remembered so next session's promotion knows which results to use
   try {
     const { error } = await sb.from('settings').update(payload).eq('id', 1);
@@ -1795,8 +2129,8 @@ function studentAverage(subjectsObj){
 
 async function renderResults(){
   await loadSettings();
-  const myClasses = visibleClasses();
-  if (!canAccessClass(resultsState.classId) && myClasses.length) resultsState.classId = myClasses[0].id;
+  const myClasses = visibleClasses('results');
+  if (!canAccessClass(resultsState.classId, 'results') && myClasses.length) resultsState.classId = myClasses[0].id;
   if (myClasses.length === 0) return `<div class="panel"><div class="empty">No classes are assigned to you yet.</div></div>`;
   const term = SETTINGS_CACHE.current_term || '';
 
@@ -1840,7 +2174,7 @@ async function renderResults(){
 async function openResultsFormForStudent(studentId){
   const { data: s } = await sb.from('students').select('*').eq('id', studentId).maybeSingle();
   if (!s) return;
-  if (!canAccessClass(s.class_id)) { toast('That student is not in one of your assigned classes.'); return; }
+  if (!canAccessClass(s.class_id, 'results')) { toast('That student is not in one of your assigned classes.'); return; }
   await loadSettings();
   const term = SETTINGS_CACHE.current_term;
   const sec = feeSectionFor(s.class_id);
@@ -2273,10 +2607,10 @@ async function renderFees(){
   await loadSettings();
   const term = SETTINGS_CACHE.current_term;
   if (!term) return `<div class="panel"><div class="empty">Set a Current Term in Settings before recording fees.</div></div>`;
-  const myClasses = visibleClasses();
+  const myClasses = visibleClasses('fees');
   const { data: students } = await sb.from('students').select('*');
   let roster = (students||[]).filter(isActiveStudent);
-  if (isScopedRole() && myAssignedClasses()) roster = roster.filter(s => myAssignedClasses().includes(s.class_id));
+  if (isScopedRole('fees') && myAssignedClasses('fees')) roster = roster.filter(s => myAssignedClasses('fees').includes(s.class_id));
   if (feesState.classId !== 'ALL') roster = roster.filter(s => s.class_id === feesState.classId);
   roster.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
 
@@ -2301,7 +2635,7 @@ async function renderFees(){
   <div class="panel">
     <div class="row between" style="margin-bottom:6px;">
       <select onchange="feesState.classId=this.value;renderTabAsync();">
-        <option value="ALL">All ${isScopedRole()?'My':''} Classes</option>
+        <option value="ALL">All ${isScopedRole('fees')?'My':''} Classes</option>
         ${myClasses.map(c=>`<option value="${c.id}" ${feesState.classId===c.id?'selected':''}>${c.name}</option>`).join('')}
       </select>
       <span class="desc" style="margin:0;">Term: <strong>${esc(term)}</strong> · Expected ${naira(totalExpected)} · Collected ${naira(totalCollected)}</span>
@@ -2973,7 +3307,7 @@ async function deleteDocument(id){
 // =====================================================================
 // REPORTS
 // =====================================================================
-let darState = { mode:'single', date: todayISO(), from: todayISO().slice(0,8)+'01', to: todayISO(), scope:'allStudents' };
+let darState = { mode:'single', date: todayISO(), from: todayISO().slice(0,8)+'01', to: todayISO(), scope:'allStudents', outsideOnly:false };
 let indivReportState = { type: 'student', from: todayISO().slice(0,8)+'01', to: todayISO() };
 let cceState = { kind: 'students' };
 const CCE_STUDENT_COLUMNS = [
@@ -3092,6 +3426,7 @@ async function renderReports(){
       ${darState.scope==='oneStudent' ? `<select id="dar_person">${(await sb.from('students').select('id,name').order('name')).data?.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')||''}</select>` : ''}
       ${darState.scope==='oneStaff' ? `<select id="dar_person">${(await sb.from('staff').select('id,name').order('name')).data?.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')||''}</select>` : ''}
     </div>
+    ${darState.scope==='allStaff'||darState.scope==='oneStaff' ? `<label style="display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:13px;"><input type="checkbox" id="dar_outside" ${darState.outsideOnly?'checked':''} onchange="darState.outsideOnly=this.checked;" style="width:auto;"> <strong>Outside school only</strong> <span class="desc" style="margin:0;">&mdash; list only staff who checked in or out away from the school (with distance and map link)</span></label>` : ''}
     <div class="row">
       <button class="btn small" onclick="generateDailyAttendanceReport('preview')">Preview / Word / PDF</button>
       <button class="btn small secondary" onclick="generateDailyAttendanceReport('csv')">Export CSV</button>
@@ -3284,25 +3619,31 @@ async function generateDailyAttendanceReport(format){
       dateList.forEach(date => {
         const rec = (attRows||[]).find(r=>r.staff_id===s.id && r.date===date);
         if (!rec && mode==='range') return;
-        rows.push({ date, name: s.name, type:'Staff', classOrRole: s.role||'', status: statusWord(rec?rec.status:'U'), time: rec?.time_in||'', reason: rec?.reason||'', loc: rec && rec.check_in_at ? ((rec.check_in_within===true?'At school':rec.check_in_within===false?'OUTSIDE school':'') + (rec.check_in_distance_m!=null ? ' ('+Math.round(rec.check_in_distance_m)+' m)' : '')) : '' });
+        rows.push({ date, name: s.name, type:'Staff', classOrRole: s.role||'', status: statusWord(rec?rec.status:'U'), time: rec?.time_in||'', reason: rec?.reason||'', loc: rec && rec.check_in_at ? ((rec.check_in_within===true?'At school':rec.check_in_within===false?'OUTSIDE school':'') + (rec.check_in_distance_m!=null ? ' ('+Math.round(rec.check_in_distance_m)+' m)' : '')) : '',
+          outside: !!(rec && (rec.check_in_within===false || rec.check_out_within===false)),
+          dist: rec && rec.check_in_distance_m!=null ? Math.round(rec.check_in_distance_m) : '',
+          map: rec && rec.check_in_lat!=null ? `https://www.google.com/maps?q=${rec.check_in_lat},${rec.check_in_lng}` : '' });
       });
     });
   }
   rows.sort((a,b)=> a.date===b.date ? a.name.localeCompare(b.name) : a.date.localeCompare(b.date));
+  const outsideOnly = (scope==='allStaff'||scope==='oneStaff') && !!document.getElementById('dar_outside')?.checked;
+  darState.outsideOnly = outsideOnly;
+  if (outsideOnly) { for (let i = rows.length - 1; i >= 0; i--) if (!rows[i].outside) rows.splice(i, 1); }
   const showDateCol = mode==='range';
   const periodLabel = mode==='range' ? `${darState.from} to ${darState.to}` : darState.date;
   if (format==='csv' || format==='xlsx') {
-    const headers = [...(showDateCol?['Date']:[]),'Name','Type','Class / Role','Status','Time','Reason','Location check'];
-    const outRows = [headers, ...rows.map(r=>[...(showDateCol?[r.date]:[]),r.name,r.type,r.classOrRole,r.status,r.time,r.reason,r.loc||''])];
+    const headers = [...(showDateCol?['Date']:[]),'Name','Type','Class / Role','Status','Time','Reason','Location check','Distance from school (m)','Map link'];
+    const outRows = [headers, ...rows.map(r=>[...(showDateCol?[r.date]:[]),r.name,r.type,r.classOrRole,r.status,r.time,r.reason,r.loc||'',r.dist ?? '',r.map||''])];
     const base = `shishenri_attendance_${mode==='range'?darState.from+'_to_'+darState.to:darState.date}`;
     if (format==='xlsx') downloadXLSXRows(outRows, base+'.xlsx', 'Attendance'); else downloadCSVText(rowsToCsv(outRows), base+'.csv');
     return;
   }
-  const bodyRows = rows.map(r=>`<tr>${showDateCol?`<td style="border:1px solid #ccc;padding:6px;">${esc(r.date)}</td>`:''}<td style="border:1px solid #ccc;padding:6px;">${esc(r.name)}</td><td style="border:1px solid #ccc;padding:6px;">${esc(r.type)}</td><td style="border:1px solid #ccc;padding:6px;">${esc(r.classOrRole)}</td><td style="border:1px solid #ccc;padding:6px;text-align:center;">${esc(r.status)}</td><td style="border:1px solid #ccc;padding:6px;">${esc(r.time)}</td><td style="border:1px solid #ccc;padding:6px;">${esc(r.reason)}</td><td style="border:1px solid #ccc;padding:6px;">${esc(r.loc||'')}</td></tr>`).join('');
+  const bodyRows = rows.map(r=>`<tr>${showDateCol?`<td style="border:1px solid #ccc;padding:6px;">${esc(r.date)}</td>`:''}<td style="border:1px solid #ccc;padding:6px;">${esc(r.name)}</td><td style="border:1px solid #ccc;padding:6px;">${esc(r.type)}</td><td style="border:1px solid #ccc;padding:6px;">${esc(r.classOrRole)}</td><td style="border:1px solid #ccc;padding:6px;text-align:center;">${esc(r.status)}</td><td style="border:1px solid #ccc;padding:6px;">${esc(r.time)}</td><td style="border:1px solid #ccc;padding:6px;">${esc(r.reason)}</td><td style="border:1px solid #ccc;padding:6px;">${esc(r.loc||'')}${r.map ? ` &middot; <a href="${esc(r.map)}">map</a>` : ''}</td></tr>`).join('');
   printHTML(`<table style="width:100%;border-collapse:collapse;font-size:12px;font-family:Inter,sans-serif;">
     <tr style="background:#16345E;color:#fff;">${showDateCol?'<th style="padding:6px;">Date</th>':''}<th style="padding:6px;text-align:left;">Name</th><th style="padding:6px;">Type</th><th style="padding:6px;text-align:left;">Class / Role</th><th style="padding:6px;">Status</th><th style="padding:6px;">Time</th><th style="padding:6px;text-align:left;">Reason</th><th style="padding:6px;text-align:left;">Location</th></tr>
     ${bodyRows || `<tr><td colspan="${showDateCol?8:7}" style="padding:10px;text-align:center;border:1px solid #ccc;">No records.</td></tr>`}
-  </table>`, `Attendance Report — ${periodLabel}`);
+  </table>`, `Attendance Report${outsideOnly?' (outside school only)':''} — ${periodLabel}`);
 }
 
 // =====================================================================
@@ -3901,13 +4242,14 @@ function parseMapsLocation(input){
   if ((m = t.match(new RegExp('!3d' + N + '!4d' + N)))) return ok(m[1], m[2], 'the place marker in the link');
   if ((m = t.match(new RegExp('[?&](?:q|ll|query|center|destination|daddr|saddr)=\\s*' + N + '\\s*,\\s*' + N)))) return ok(m[1], m[2], 'the link');
   if ((m = t.match(new RegExp('/(?:search|place|dir)/\\s*' + N + '\\s*,\\s*' + N)))) return ok(m[1], m[2], 'the link');
-  if ((m = t.match(new RegExp('@' + N + ',\\s*' + N)))) return ok(m[1], m[2], 'the map position in the link');
   if ((m = t.match(new RegExp('^\\s*' + N + '\\s*[,;]?\\s+' + N + '\\s*$'))) || (m = t.match(new RegExp('^\\s*' + N + '\\s*,\\s*' + N + '\\s*$')))) return ok(m[1], m[2], 'the coordinates you typed');
   if ((m = t.match(/(\d{1,3})\s*°\s*(\d{1,2})\s*['′]\s*(\d{1,2}(?:\.\d+)?)\s*["″”]?\s*([NS])\s*[,;]?\s*(\d{1,3})\s*°\s*(\d{1,2})\s*['′]\s*(\d{1,2}(?:\.\d+)?)\s*["″”]?\s*([EW])/i))) {
     const lat = (+m[1] + m[2] / 60 + m[3] / 3600) * (m[4].toUpperCase() === 'S' ? -1 : 1);
     const lng = (+m[5] + m[6] / 60 + m[7] / 3600) * (m[8].toUpperCase() === 'W' ? -1 : 1);
-    return ok(lat, lng, 'the degrees-minutes-seconds you typed');
+    return ok(lat, lng, 'the degrees-minutes-seconds given');
   }
+  // The @lat,lng in a link is only where the MAP is centred on screen, not the pin, so it is the last resort.
+  if ((m = t.match(new RegExp('@' + N + ',\\s*' + N)))) return ok(m[1], m[2], 'the map position in the link');
   if (/maps\.app\.goo\.gl|goo\.gl\/maps|g\.co\/kgs/i.test(t))
     return { short: true, error: 'That is a shortened Google Maps link, which a web page cannot open. Open it in your browser, then copy the long address from the address bar and paste that here. Or right-click the school on Google Maps and copy the coordinates shown at the top.' };
   return { error: 'I could not find a location in that. Paste the full Google Maps address, or coordinates such as 8.9871, 7.7452.' };
@@ -3940,6 +4282,15 @@ let staffAttState = { staffId: null };
 let STAFF_CTX = { staffId: null, self: false };
 function statusWord(s){ return {P:'Present',A:'Absent',L:'Late',U:'Unmarked'}[s] || 'Unmarked'; }
 const clock5 = t => t ? String(t).slice(0,5) : '—';
+
+// Days that ended with a Time In / Time Out left open are closed by the database ("Closed by system").
+// It only ever touches days BEFORE today. Safe to call often; quietly does nothing if SQL 23 is not installed.
+let _lastDayClose = 0;
+async function closeOpenStaffDays(force){
+  if (!force && Date.now() - _lastDayClose < 600000) return;
+  _lastDayClose = Date.now();
+  try { await sb.rpc('close_open_staff_days'); } catch(e) {}
+}
 
 // The date according to the school server, so a wrong phone/computer clock cannot confuse the screen.
 async function serverToday(){
@@ -4035,13 +4386,39 @@ async function unlockStaffDay(){
   toast('Unlocked for correction.'); renderTabAsync();
 }
 
-function staffHistoryRows(rows){
-  return (rows||[]).map(r => `<tr>
+function staffHistoryRows(rows, opts){
+  opts = opts || {};
+  return (rows||[]).map(r => {
+    const inSys = r.in_submitted_by === 'Closed by system', outSys = r.out_submitted_by === 'Closed by system';
+    const outAdmin = /set by admin/i.test(r.out_submitted_by || '');
+    const inPill = r.in_submitted_at ? (inSys ? '<span class="pill muted">In closed by system</span>' : '<span class="pill ok">In &#10003;</span>') : '<span class="pill warn">In not submitted</span>';
+    const outPill = r.status==='A' ? '' : (r.out_submitted_at ? (outSys ? '<span class="pill muted">Out closed by system</span>' : outAdmin ? '<span class="pill ok" title="' + esc(r.out_submitted_by) + '">Out &#10003; (set by admin)</span>' : '<span class="pill ok">Out &#10003;</span>') : '<span class="pill warn">Out not submitted</span>');
+    const canFix = opts.admin && opts.today && r.status !== 'A' && r.date < opts.today && (outSys || !r.out_submitted_at) && hasPerm('edit_attendance');
+    return `<tr>
     <td class="mono">${r.date}</td><td>${statusWord(r.status)}</td><td>${clock5(r.time_in)}</td><td>${clock5(r.time_out)}</td>
     <td>${esc(r.reason||'')}</td>
     <td>${r.check_in_at ? locBadge(r.check_in_within, r.check_in_distance_m) + ' ' + mapLink(r.check_in_lat, r.check_in_lng) : `<span class="pill muted">${r.in_marked_at ? 'marked by Admin (server time)' : 'marked by Admin'}</span>`}</td>
-    <td>${r.in_submitted_at ? '<span class="pill ok">In &#10003;</span>' : '<span class="pill warn">In not submitted</span>'} ${r.status==='A' ? '' : (r.out_submitted_at ? '<span class="pill ok">Out &#10003;</span>' : '<span class="pill warn">Out not submitted</span>')}</td>
-  </tr>`).join('');
+    <td>${inPill} ${outPill}</td>
+    ${opts.admin ? `<td class="right">${canFix ? `<button class="iconbtn" onclick="openSetTimeOut('${r.staff_id}','${r.date}','${clock5(r.time_in)}')">Set Time Out</button>` : ''}</td>` : ''}
+  </tr>`; }).join('');
+}
+function openSetTimeOut(staffId, date, timeIn){
+  openModal(`<h3>Set the missed Time Out</h3>
+    <div class="msub">${fmtDate(date)} &middot; Time In was ${esc(timeIn)}. Use this only when the person really did leave at a known time. The change is recorded in the Audit Log with your name and reason.</div>
+    <div class="field"><label>Time Out *</label><input id="sto_time" type="time" value="15:00"></div>
+    <div class="field"><label>Reason *</label><input id="sto_reason" placeholder="e.g. Confirmed by Head Teacher that she left at 3 pm"></div>
+    <div id="stoStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="stoBtn" onclick="saveSetTimeOut('${staffId}','${date}')">Save Time Out</button></div>`);
+}
+async function saveSetTimeOut(staffId, date){
+  const st = document.getElementById('stoStatus'), btn = document.getElementById('stoBtn');
+  const time = document.getElementById('sto_time').value, reason = document.getElementById('sto_reason').value.trim();
+  if (!time) { st.textContent = 'Enter the Time Out.'; return; }
+  if (reason.length < 3) { st.textContent = 'A reason is required.'; return; }
+  btn.disabled = true; st.textContent = 'Saving…';
+  const { error } = await sb.rpc('admin_set_time_out', { p_staff: staffId, p_date: date, p_time: time, p_reason: reason });
+  if (error) { btn.disabled = false; st.textContent = /function .*admin_set_time_out/.test(error.message) ? 'This needs SQL file 23 to be installed first.' : error.message; return; }
+  closeModal(); toast('Time Out saved and recorded in the Audit Log.'); renderTabAsync();
 }
 
 // ---------- Admin screen: choose a staff member ----------
@@ -4051,6 +4428,7 @@ async function renderStaffAttendance(){
   if (!staffAttState.staffId && active.length) staffAttState.staffId = active[0].id;
   const staffMember = active.find(s => s.id === staffAttState.staffId);
   if (!staffMember) return `<div class="panel"><div class="empty">Add a staff member first (Staff tab).</div></div>`;
+  await closeOpenStaffDays(true);
   const today = await serverToday();
   const { data: row } = await sb.from('staff_attendance').select('*').eq('staff_id', staffMember.id).eq('date', today).maybeSingle();
   const { data: monthRows } = await sb.from('staff_attendance').select('*').eq('staff_id', staffMember.id).gte('date', today.slice(0,8) + '01').order('date', { ascending: false });
@@ -4065,8 +4443,8 @@ async function renderStaffAttendance(){
   <div class="panel">
     <h3 style="font-size:14px;margin:0 0 8px;">This Month &mdash; ${esc(staffMember.name)}</h3>
     <div class="tablewrap"><table>
-      <tr><th>Date</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Reason</th><th>Source / Location</th><th>Submitted</th></tr>
-      ${staffHistoryRows(monthRows) || '<tr><td colspan="7" style="text-align:center;color:var(--grey);">No entries yet this month.</td></tr>'}
+      <tr><th>Date</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Reason</th><th>Source / Location</th><th>Submitted</th><th></th></tr>
+      ${staffHistoryRows(monthRows, { admin: true, today }) || '<tr><td colspan="8" style="text-align:center;color:var(--grey);">No entries yet this month.</td></tr>'}
     </table></div>
   </div>`;
 }
@@ -4076,6 +4454,7 @@ async function renderMyAttendance(){
   await loadSettings();
   const p = MY_PROFILE;
   if (!p.staff_record_id) return `<div class="panel"><div class="empty"><div class="big">&#128205;</div>Your login is not linked to a staff record yet, so attendance marking is not available.<br>Ask Admin to link it in Settings &rarr; Staff Logins.</div></div>`;
+  await closeOpenStaffDays(true);
   const today = await serverToday();
   const { data: row } = await sb.from('staff_attendance').select('*').eq('staff_id', p.staff_record_id).eq('date', today).maybeSingle();
   const { data: hist } = await sb.from('staff_attendance').select('*').eq('staff_id', p.staff_record_id).order('date', { ascending: false }).limit(15);
@@ -4132,7 +4511,7 @@ const TAB_PERMS = {
   rolesPerms:['assign_roles','manage_roles','manage_overrides','revoke_roles'],
 };
 const LEGACY_PERMS = {
-  teacher: ['view_students','view_attendance','mark_attendance','view_results','enter_results','create_discipline_case','view_timetable','view_reports'],
+  teacher: ['view_students','view_attendance','mark_attendance','view_results','enter_results','create_discipline_case','view_timetable'],
   bursar: ['view_students','view_fees','record_payment','edit_payment','view_salary','process_payroll','view_expenses','manage_expenses','view_procurement','manage_procurement','view_reports','view_timetable'],
 };
 function legacyIsAdmin(){ const r = MY_PROFILE?.role; return r === 'admin' || r === 'headofschool'; }
@@ -4150,7 +4529,9 @@ async function loadMyAccess(){
     const { data, error } = await sb.rpc('my_access');
     if (error) throw error;
     MY_ACCESS = data; ACCESS_MODE = 'rbac';
-  } catch(e) { MY_ACCESS = null; ACCESS_MODE = 'legacy'; }
+    // Dashboard-card permissions exist only after SQL 23 is installed; until then the dashboard behaves as before.
+    try { const r = await sb.from('permissions').select('key').eq('key', 'dash_students').maybeSingle(); DASH_PERMS_ON = !!(r.data); } catch(e) { DASH_PERMS_ON = (data.permissions || []).some(p => String(p).startsWith('dash_')); }
+  } catch(e) { MY_ACCESS = null; ACCESS_MODE = 'legacy'; DASH_PERMS_ON = false; }
   await loadRoleList();
 }
 function hasPerm(p){
@@ -4178,13 +4559,23 @@ function classScope(perm){
   const c = MY_PROFILE?.classes_assigned;
   return (c && c.length) ? c : CLASSES.map(x => x.id);
 }
-function visibleClasses(){
-  const ids = new Set([...classScope('view_students'), ...classScope('view_attendance'), ...classScope('view_results'), ...classScope('view_fees')]);
+// Each screen only lists the classes the person may use FOR THAT SCREEN. Marking attendance depends only on the
+// attendance permissions, results only on the results permissions, and so on - so a Bursar who also holds a
+// Class Teacher role sees just the Class Teacher's own class(es) in Attendance, never every class.
+const SCREEN_PERMS = {
+  students: ['view_students'],
+  attendance: ['view_attendance','mark_attendance'],
+  results: ['view_results','enter_results'],
+  fees: ['view_fees'],
+};
+function visibleClasses(screen){
+  const perms = SCREEN_PERMS[screen] || ['view_students','view_attendance','view_results','view_fees'];
+  const ids = new Set(); perms.forEach(p => classScope(p).forEach(c => ids.add(c)));
   return CLASSES.filter(c => ids.has(c.id));
 }
-function isScopedRole(){ return visibleClasses().length < CLASSES.length; }
-function myAssignedClasses(){ return isScopedRole() ? visibleClasses().map(c => c.id) : null; }
-function canAccessClass(classId){ return visibleClasses().some(c => c.id === classId); }
+function isScopedRole(screen){ return visibleClasses(screen).length < CLASSES.length; }
+function myAssignedClasses(screen){ return isScopedRole(screen) ? visibleClasses(screen).map(c => c.id) : null; }
+function canAccessClass(classId, screen){ return visibleClasses(screen).some(c => c.id === classId); }
 
 // Same rule as the database: who may hand out which role.
 function canGrantRole(r){
@@ -4385,7 +4776,7 @@ async function saveRole(roleId){
       r = await sb.rpc('set_role_permissions', { p_id: roleId, p_perms: perms, p_reason: reason });
       if (r.error) throw r.error;
     }
-    closeModal(); toast('Role saved.'); await loadRoleList(); renderTabAsync();
+    PERM_CAT = null; closeModal(); toast('Role saved.'); await loadRoleList(); renderTabAsync();
   } catch(e) { btn.disabled = false; st.textContent = e.message; }
 }
 
@@ -4415,7 +4806,8 @@ async function openAssignRole(){
     <h3>Assign a role</h3>
     <div class="msub">Gives extra access on top of the person's normal login role. Set an end date for acting / temporary roles.</div>
     <div class="field"><label>Person *</label>${ssHtml('ar_staff', staffItems, '', 'Search staff…')}</div>
-    <div class="field"><label>Role *</label><select id="ar_role">${roles.map(r => `<option value="${r.key}">${esc(r.name)} (tier ${r.tier}, ${r.scope_type})</option>`).join('')}</select></div>
+    <div class="field"><label>Role *</label><select id="ar_role" onchange="renderPermPicker('ar')">${roles.map(r => `<option value="${r.key}">${esc(r.name)} (tier ${r.tier}, ${r.scope_type})</option>`).join('')}</select></div>
+    <div id="ar_perm"></div>
     <div class="field"><label>Classes <span style="font-weight:400;color:var(--grey);">(class-scoped roles)</span></label>${CLASSES.map(c => `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:12.5px;"><input type="checkbox" class="ar_cls" value="${c.id}" style="width:auto;">${c.name}</label>`).join('')}</div>
     <div class="field"><label>Sections <span style="font-weight:400;color:var(--grey);">(section-scoped roles)</span></label>${SECTIONS.map(s => `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:12.5px;"><input type="checkbox" class="ar_sec" value="${s}" style="width:auto;">${s}</label>`).join('')}</div>
     <div class="field"><label>Departments <span style="font-weight:400;color:var(--grey);">(department-scoped roles; separate with commas)</span></label><input id="ar_dept" list="deptList" placeholder="e.g. Mathematics">${deptDatalist()}</div>
@@ -4427,7 +4819,85 @@ async function openAssignRole(){
     <div class="field"><label>Reason *</label><input id="ar_reason" placeholder="e.g. Acting Head Teacher while Mrs X is on leave"></div>
     <div id="arStatus" class="desc"></div>
     <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="arBtn" onclick="saveAssignRole()">Assign</button></div>`, true);
+  renderPermPicker('ar', { current: { denied: new Set(), granted: new Set(), id: {} } });
 }
+
+// =====================================================================
+// PRIVILEGE PICKER - when a role is given to someone, every privilege the role carries is listed.
+// Leave all ticked = the role's full access. Untick = removed for THIS person only (a "deny"). Tick one from
+// "Add more" = extra for THIS person (a "grant", with an end date unless you are the Proprietor). The role itself is not changed.
+// =====================================================================
+let PERM_CAT = null;
+const PP = {};
+async function loadPermCatalog(force){
+  if (PERM_CAT && !force) return PERM_CAT;
+  const [p, rp] = await Promise.all([sb.from('permissions').select('*').order('sort'), sb.from('role_permissions').select('role_id,permission_key')]);
+  const byRole = {}; (rp.data || []).forEach(x => { (byRole[x.role_id] = byRole[x.role_id] || new Set()).add(x.permission_key); });
+  PERM_CAT = { perms: p.data || [], byRole };
+  return PERM_CAT;
+}
+async function loadCurrentOverrides(who){
+  const out = { denied: new Set(), granted: new Set(), id: {} };
+  if (!who || (!who.userId && !who.staffId)) return out;
+  const conds = []; if (who.userId) conds.push(`user_id.eq.${who.userId}`); if (who.staffId) conds.push(`staff_id.eq.${who.staffId}`);
+  const { data } = await sb.from('user_permission_overrides').select('id,permission_key,effect,end_date').eq('status', 'active').or(conds.join(','));
+  (data || []).filter(o => !o.end_date || o.end_date >= todayISO()).forEach(o => { (o.effect === 'deny' ? out.denied : out.granted).add(o.permission_key); out.id[o.effect + ':' + o.permission_key] = o.id; });
+  return out;
+}
+async function renderPermPicker(prefix, init){
+  const box = document.getElementById(prefix + '_perm'); if (!box || ACCESS_MODE !== 'rbac') return;
+  if (init) PP[prefix] = { current: init.current || { denied: new Set(), granted: new Set(), id: {} } };
+  const S = PP[prefix] = PP[prefix] || { current: { denied: new Set(), granted: new Set(), id: {} } };
+  S.roleKey = document.getElementById(prefix + '_role')?.value;
+  try { await loadPermCatalog(); } catch(e) { box.innerHTML = ''; return; }
+  box.innerHTML = permPickerHtml(prefix);
+}
+function permPickerHtml(prefix){
+  const S = PP[prefix], r = RBAC_ROLES.find(x => x.key === S.roleKey);
+  if (!r) return '';
+  if (r.key === 'admin') return `<div class="bignote">The Proprietor role always holds every privilege and cannot be customised.</div>`;
+  const have = PERM_CAT.byRole[r.id] || new Set();
+  const mine = new Set(MY_ACCESS?.permissions || []), isProp = myTier() === 1;
+  const cats = [...new Set(PERM_CAT.perms.map(p => p.category))];
+  const lbl = (p, cls, checked, disabled) => `<label style="display:flex;align-items:center;gap:8px;padding:2px 0;font-size:12.5px;${disabled ? 'opacity:.5;' : ''}"><input type="checkbox" class="${cls}" value="${p.key}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''} style="width:auto;"> ${esc(p.label)}${p.sensitive ? ' <span class="pill warn" style="font-size:9px;">sensitive</span>' : ''}${disabled ? ' <span style="font-size:10px;color:var(--grey);">(you do not hold this)</span>' : ''}</label>`;
+  const roleHtml = cats.map(c => { const ps = PERM_CAT.perms.filter(p => p.category === c && have.has(p.key)); return ps.length ? `<div style="margin:6px 0 2px;"><strong style="font-size:12.5px;">${esc(c)}</strong></div>` + ps.map(p => lbl(p, `pp_${prefix}_role`, !S.current.denied.has(p.key), false)).join('') : ''; }).join('');
+  const extraHtml = cats.map(c => { const ps = PERM_CAT.perms.filter(p => p.category === c && !have.has(p.key)); return ps.length ? `<div style="margin:6px 0 2px;"><strong style="font-size:12.5px;">${esc(c)}</strong></div>` + ps.map(p => lbl(p, `pp_${prefix}_extra`, S.current.granted.has(p.key), !isProp && !mine.has(p.key))).join('') : ''; }).join('');
+  return `<div class="field"><label>What this role can do &mdash; ${esc(r.name)}</label>
+    <div class="desc" style="margin:0 0 6px;">Everything the role carries is ticked, which is its <strong>full access</strong>. Untick anything this person should <strong>not</strong> have for now (for example while a situation lasts). It only affects this person; the role itself is not changed. You can come back and tick it again at any time.</div>
+    <div class="row" style="margin-bottom:6px;"><button type="button" class="btn small secondary" onclick="ppAll('${prefix}',true)">Give ALL the role's privileges</button><button type="button" class="btn small ghost" onclick="ppAll('${prefix}',false)">Untick all</button></div>
+    <div style="max-height:240px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:6px 12px;">${roleHtml || '<div class="desc">This role has no privileges yet.</div>'}</div>
+    <details style="margin-top:8px;"><summary style="cursor:pointer;font-size:13px;color:var(--navy);">Add more privileges beyond this role&hellip;</summary>
+      <div style="max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:6px 12px;margin-top:6px;">${extraHtml}</div>
+      <div class="field" style="margin-top:8px;max-width:260px;"><label>Extra privileges end on ${isProp ? '<span style="font-weight:400;color:var(--grey);">(optional)</span>' : '*'}</label><input id="pp_${prefix}_end" type="date"></div>
+    </details></div>`;
+}
+function ppAll(prefix, on){ document.querySelectorAll(`.pp_${prefix}_role`).forEach(c => { if (!c.disabled) c.checked = on; }); }
+// Applies the ticks as the person's individual permissions. Returns a short summary text.
+async function applyPermPicker(prefix, who){
+  if (ACCESS_MODE !== 'rbac' || !PP[prefix] || !document.querySelector(`.pp_${prefix}_role, .pp_${prefix}_extra`)) return '';
+  const S = PP[prefix], r = RBAC_ROLES.find(x => x.key === S.roleKey); if (!r || r.key === 'admin') return '';
+  const have = PERM_CAT.byRole[r.id] || new Set();
+  const cur = await loadCurrentOverrides(who);
+  const roleBoxes = [...document.querySelectorAll(`.pp_${prefix}_role`)], extraBoxes = [...document.querySelectorAll(`.pp_${prefix}_extra`)];
+  const end = document.getElementById(`pp_${prefix}_end`)?.value || null;
+  const wantDeny = new Set(roleBoxes.filter(c => !c.checked).map(c => c.value));
+  const wantGrant = new Set(extraBoxes.filter(c => c.checked && !c.disabled).map(c => c.value));
+  if (wantGrant.size && !end && myTier() !== 1) throw new Error('Give an end date for the extra privileges.');
+  const why = `Customised when the role was set, by ${MY_PROFILE?.name || 'management'}`;
+  let removed = 0, added = 0, restored = 0, dropped = 0;
+  const call = async (fn, args) => { const { error } = await sb.rpc(fn, args); if (error) throw error; };
+  for (const k of have) {
+    if (wantDeny.has(k) && !cur.denied.has(k)) { await call('grant_override', { p_staff: who.staffId || null, p_user: who.userId || null, p_perm: k, p_effect: 'deny', p_start: todayISO(), p_end: null, p_reason: why }); removed++; }
+    if (!wantDeny.has(k) && cur.denied.has(k)) { await call('revoke_override', { p_id: cur.id['deny:' + k], p_reason: 'Privilege given back' }); restored++; }
+  }
+  for (const c of extraBoxes) {
+    const k = c.value;
+    if (wantGrant.has(k) && !cur.granted.has(k)) { await call('grant_override', { p_staff: who.staffId || null, p_user: who.userId || null, p_perm: k, p_effect: 'grant', p_start: todayISO(), p_end: end, p_reason: why }); added++; }
+    if (!c.checked && cur.granted.has(k) && !c.disabled) { await call('revoke_override', { p_id: cur.id['grant:' + k], p_reason: 'Extra privilege removed' }); dropped++; }
+  }
+  return [removed && `${removed} privilege(s) removed`, added && `${added} extra added`, restored && `${restored} given back`, dropped && `${dropped} extra removed`].filter(Boolean).join(', ');
+}
+
 function deptDatalist(){ return `<datalist id="deptList">${DEPARTMENTS.map(d => `<option value="${esc(d)}">`).join('')}</datalist>`; }
 const DEPARTMENTS = ['Mathematics','English','Basic Science','Social Studies','Computer / ICT','Business Studies','Agricultural Science','Civic Education','Religious Studies','Creative Arts','P.H.E','Administration','Finance','HR','Student Affairs','Sports','Nursery','Primary','Secondary'];
 function arQuickEnd(days){ const d = new Date(); d.setDate(d.getDate() + days); document.getElementById('ar_end').value = d.toISOString().slice(0, 10); }
@@ -4436,6 +4906,11 @@ async function saveAssignRole(){
   const staffId = document.getElementById('ar_staff').value, reason = document.getElementById('ar_reason').value.trim();
   if (!staffId) { st.textContent = 'Choose the person.'; return; }
   if (reason.length < 3) { st.textContent = 'A reason is required.'; return; }
+  const rr = RBAC_ROLES.find(r => r.key === document.getElementById('ar_role').value);
+  const nCls = document.querySelectorAll('.ar_cls:checked').length, nSec = document.querySelectorAll('.ar_sec:checked').length, nDep = document.getElementById('ar_dept').value.trim();
+  if (rr && rr.scope_type === 'class' && !nCls) { st.textContent = 'This role works on specific classes. Tick the class(es) it applies to, otherwise it gives no access at all.'; return; }
+  if (rr && rr.scope_type === 'section' && !nSec && !(rr.default_sections || []).length) { st.textContent = 'This role works on specific sections. Tick the section(s) it applies to.'; return; }
+  if (rr && rr.scope_type === 'department' && !nDep) { st.textContent = 'This role works on specific departments. Type the department(s) it applies to.'; return; }
   btn.disabled = true; st.textContent = 'Saving…';
   const { error } = await sb.rpc('assign_role', {
     p_staff: staffId, p_user: null, p_role_key: document.getElementById('ar_role').value,
@@ -4443,7 +4918,10 @@ async function saveAssignRole(){
     p_departments: document.getElementById('ar_dept').value.split(',').map(x => x.trim()).filter(Boolean),
     p_start: document.getElementById('ar_start').value || null, p_end: document.getElementById('ar_end').value || null, p_reason: reason });
   if (error) { btn.disabled = false; st.textContent = error.message; return; }
-  closeModal(); toast('Role assigned.'); renderTabAsync();
+  let note = '';
+  try { const s = await applyPermPicker('ar', { staffId }); if (s) note = ' (' + s + ')'; }
+  catch(pe) { toast('Role assigned, but the privilege changes were not saved: ' + pe.message); }
+  closeModal(); toast('Role assigned.' + note); renderTabAsync();
 }
 async function revokeAssignment(id){
   const reason = askReason('Reason for revoking this role (required, recorded in the audit log):'); if (!reason) return;
@@ -4578,13 +5056,13 @@ async function bumpCounter(key){
 // These are four separate things and are never derived from one another.
 // =====================================================================
 const CAREER_RANKS_FALLBACK = [
-  {rank:1,code:'ED-01',designation:'Support Services Staff'},{rank:2,code:'ED-02',designation:'Senior Support Services Staff'},
-  {rank:3,code:'ED-03',designation:'Teaching Assistant'},{rank:4,code:'ED-04',designation:'Senior Teaching Assistant'},
-  {rank:5,code:'ED-05',designation:'Associate Educator'},{rank:6,code:'ED-06',designation:'Senior Associate Educator'},
-  {rank:7,code:'ED-07',designation:'Certified Educator'},{rank:8,code:'ED-08',designation:'Senior Certified Educator'},
-  {rank:9,code:'ED-09',designation:'Professional Educator'},{rank:10,code:'ED-10',designation:'Senior Professional Educator'},
-  {rank:11,code:'ED-11',designation:'Advanced Professional Educator'},{rank:12,code:'ED-12',designation:'Senior Advanced Professional Educator'},
-  {rank:13,code:'ED-13',designation:'Lead Educator'},{rank:14,code:'ED-14',designation:'Academic Fellow'},{rank:15,code:'ED-15',designation:'Senior Academic Fellow'},
+  {rank:1,code:'SSGS-01',designation:'Support Services Staff'},{rank:2,code:'SSGS-02',designation:'Senior Support Services Staff'},
+  {rank:3,code:'SSGS-03',designation:'Teaching Assistant'},{rank:4,code:'SSGS-04',designation:'Senior Teaching Assistant'},
+  {rank:5,code:'SSGS-05',designation:'Associate Educator'},{rank:6,code:'SSGS-06',designation:'Senior Associate Educator'},
+  {rank:7,code:'SSGS-07',designation:'Certified Educator'},{rank:8,code:'SSGS-08',designation:'Senior Certified Educator'},
+  {rank:9,code:'SSGS-09',designation:'Professional Educator'},{rank:10,code:'SSGS-10',designation:'Senior Professional Educator'},
+  {rank:11,code:'SSGS-11',designation:'Advanced Professional Educator'},{rank:12,code:'SSGS-12',designation:'Senior Advanced Professional Educator'},
+  {rank:13,code:'SSGS-13',designation:'Lead Educator'},{rank:14,code:'SSGS-14',designation:'Academic Fellow'},{rank:15,code:'SSGS-15',designation:'Senior Academic Fellow'},
 ];
 const QUAL_SUGGEST = { primary_cert:1, ssce:3, nd:5, ond:5, diploma:5, nce:7, bsc:9, bed:9, pgde:null, msc:11, med:11, ma:11, phd:14, edd:14, other:null };
 const QUAL_LEVEL   = { primary_cert:1, ssce:2, nd:3, ond:3, diploma:3, nce:4, bsc:5, bed:5, pgde:5.5, msc:6, med:6, ma:6, phd:7, edd:7, other:0 };
@@ -4638,10 +5116,7 @@ const val = id => (document.getElementById(id)?.value || '').trim();
 // =====================================================================
 let staffFilter = { q: '', rank: '', dept: '', status: 'active' };
 let openStaffProfileId = null;
-async function nextStaffId(){
-  const n = await bumpCounter('staffId');
-  return `SHS/STF/${String(n).padStart(3, '0')}`;
-}
+async function nextStaffId(){ return lowestFreeNumber('staff'); }
 async function renderStaff(){
   await loadCareerRefs();
   const [st, por, prof] = await Promise.all([
@@ -4916,6 +5391,10 @@ async function saveStaff(existingId){
     closeModal(); toast('Staff record saved.'); renderTabAsync();
   } catch(e) {
     btn.disabled = false;
+    if (!existingId && /duplicate key/.test(e.message)) {
+      try { document.getElementById('st_staffid').value = await nextStaffId(); } catch(_) {}
+      st.textContent = 'Someone else had just taken that Staff ID. The form now shows the next free one - press Save again.'; return;
+    }
     st.textContent = /duplicate key/.test(e.message) ? 'That Staff ID is already taken.' : 'Could not save: ' + e.message;
   }
 }
@@ -5100,12 +5579,46 @@ async function careerRanksHtml(){
   const { data: st } = await sb.from('staff').select('career_rank,status');
   const count = {}; (st || []).filter(isActiveStaff).forEach(s => { if (s.career_rank) count[s.career_rank] = (count[s.career_rank] || 0) + 1; });
   const unranked = (st || []).filter(s => isActiveStaff(s) && !s.career_rank).length;
-  return `<div class="desc">The official Shishenri educator ranking. A rank is a <strong>professional designation</strong> &mdash; it does not give management or system permissions.</div>
+  const canEditRanks = hasPerm('manage_career_framework');
+  return `<div class="row between" style="margin-bottom:8px;align-items:flex-start;gap:10px;"><div class="desc" style="margin:0;">The <strong>Shishenri Schools Grade Scale (SSGS)</strong>. A grade is a <strong>professional designation</strong> &mdash; it does not give management or system permissions.</div>
+      ${canEditRanks ? `<button class="btn small" onclick="openRankEditor(null)">+ Add grade</button>` : ''}</div>
     <div class="tablewrap"><table>
-      <tr><th>Rank</th><th>Code</th><th>Designation</th><th>Qualification / eligibility</th><th>Next on ladder</th><th class="right">Staff</th></tr>
+      <tr><th>Rank</th><th>Code</th><th>Designation</th><th>Qualification / eligibility</th><th>Next on ladder</th><th class="right">Staff</th>${canEditRanks ? '<th></th>' : ''}</tr>
       ${CAREER.ranks.map(r => `<tr><td class="mono">${String(r.rank).padStart(2, '0')}</td><td><span class="badge b-rank">${esc(r.code)}</span></td><td><strong>${esc(r.designation)}</strong></td>
-        <td style="font-size:12px;">${esc(r.eligibility || '')}</td><td style="font-size:12px;">${nextRanksFrom(r.rank).map(n => esc(rankObj(n)?.code)).join(', ') || '—'}</td><td class="right mono">${count[r.rank] || 0}</td></tr>`).join('')}
+        <td style="font-size:12px;">${esc(r.eligibility || '')}</td><td style="font-size:12px;">${nextRanksFrom(r.rank).map(n => esc(rankObj(n)?.code)).join(', ') || '—'}</td><td class="right mono">${count[r.rank] || 0}</td>${canEditRanks ? `<td class="right" style="white-space:nowrap;"><button class="iconbtn" onclick="openRankEditor(${r.rank})">Edit</button><button class="iconbtn" onclick="removeRank(${r.rank})">Remove</button></td>` : ''}</tr>`).join('')}
     </table></div><div class="desc" style="margin-top:8px;">${unranked} active staff member(s) have no approved rank yet.</div>`;
+}
+function openRankEditor(rank){
+  const r = rank ? CAREER.ranks.find(x => x.rank === rank) : null;
+  const nextNo = (CAREER.ranks.reduce((m, x) => Math.max(m, x.rank), 0)) + 1;
+  openModal(`<h3>${r ? 'Edit grade ' + String(r.rank).padStart(2,'0') : 'Add a grade'}</h3>
+    <div class="msub">${r ? 'Changing the code or designation updates it everywhere it is shown, for everyone already on this grade.' : `The new grade is added at the end of the scale as number ${String(nextNo).padStart(2,'0')}.`}</div>
+    <div class="fgrid">
+      <div class="field"><label>Code *</label><input id="rk_code" value="${esc(r ? r.code : 'SSGS-' + String(nextNo).padStart(2,'0'))}" placeholder="e.g. SSGS-16"></div>
+      <div class="field"><label>Designation *</label><input id="rk_des" value="${esc(r?.designation || '')}" placeholder="e.g. Principal Educator"></div>
+    </div>
+    <div class="field"><label>Qualification / eligibility</label><input id="rk_elig" value="${esc(r?.eligibility || '')}"></div>
+    <div class="bignote">A grade never gives system access. New grades have no promotion ladder link yet &mdash; a promotion to or from it is recorded as &ldquo;off-ladder&rdquo;. Salary bands are set under Salary bands.</div>
+    <div id="rkStatus" class="desc" style="color:var(--bad);"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" id="rkBtn" onclick="saveRank(${r ? r.rank : 'null'})">Save</button></div>`);
+}
+async function saveRank(rank){
+  const st = document.getElementById('rkStatus'), btn = document.getElementById('rkBtn');
+  const code = document.getElementById('rk_code').value.trim(), des = document.getElementById('rk_des').value.trim();
+  if (!code || !des) { st.textContent = 'Both the Code and the Designation are required.'; return; }
+  btn.disabled = true; st.style.color = 'var(--grey)'; st.textContent = 'Saving…';
+  const { error } = await sb.rpc('save_career_rank', { p_rank: rank, p_code: code, p_designation: des, p_eligibility: document.getElementById('rk_elig').value.trim() || null });
+  if (error) { btn.disabled = false; st.style.color = 'var(--bad)'; st.textContent = /function .*save_career_rank/.test(error.message) ? 'This needs SQL file 23 to be installed first.' : error.message; return; }
+  await logAudit(rank ? 'update' : 'create', 'career_rank', code, { designation: des });
+  closeModal(); await loadCareerRefs(true); toast('Grade saved.'); renderTabAsync();
+}
+async function removeRank(rank){
+  const r = CAREER.ranks.find(x => x.rank === rank); if (!r) return;
+  if (!confirm(`Remove grade ${r.code} - ${r.designation}?\n\nThis only works if nobody is on it and it has no promotion records, salary band or ladder link.`)) return;
+  const { error } = await sb.rpc('delete_career_rank', { p_rank: rank });
+  if (error) { toast(/function .*delete_career_rank/.test(error.message) ? 'This needs SQL file 23 to be installed first.' : error.message); return; }
+  await logAudit('delete', 'career_rank', r.code, { designation: r.designation });
+  await loadCareerRefs(true); toast('Grade removed.'); renderTabAsync();
 }
 async function careerPromotionsHtml(){
   const [pr, st] = await Promise.all([sb.from('promotions').select('*').order('created_at', { ascending:false }), sb.from('staff').select('id,name')]);
@@ -5274,7 +5787,7 @@ async function printAppointmentLetter(staffId){
     <p>Dear <strong>${esc(s.name)}</strong>,</p><p><strong>RE: LETTER OF APPOINTMENT — ${esc(r.designation.toUpperCase())}</strong></p>
     <p>We are pleased to confirm your appointment at ShiShenri Schools as <strong>${esc(r.designation)}</strong> (Career Grade <strong>${esc(r.code)}</strong>), with effect from <strong>${fmtDate(eff)}</strong>.</p>
     ${active.length ? `<p>You are also appointed to the following position(s) of responsibility: <strong>${esc(active.map(a => positionById(a.position_id)?.name).join(', '))}</strong>. A position of responsibility is separate from your career grade and applies for the period stated in your appointment.</p>` : ''}
-    ${hasPerm('view_salary') && fin.data?.monthly_salary != null ? `<p>Your approved monthly base salary is <strong>${naira(fin.data.monthly_salary)}</strong>.</p>` : ''}
+    <p>Your approved monthly base salary shall be commensurate to the scale of your rank.</p>
     <p>Your Staff ID will remain the same throughout your service with the school, including on promotion.</p>
     <p>We welcome you and look forward to your contribution to the Breath of Excellence.</p>
     <p style="margin-top:34px;">Yours faithfully,<br><br><br>______________________<br>For: ShiShenri Schools</p></div>`, `Appointment Letter — ${s.name}`);
