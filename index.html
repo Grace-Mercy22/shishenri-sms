@@ -91,6 +91,10 @@ input, select, textarea { font-family: inherit; }
 #content { flex: 1; padding: 20px 24px 60px; max-width: 1180px; width: 100%; margin: 0 auto; }
 
 /* ---------- Cards / KPIs ---------- */
+.gshead { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--grey); margin: 12px 0 2px; font-weight: 600; }
+.gsrow { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 8px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 13.5px; color: inherit; text-decoration: none; }
+.gsrow:hover { background: var(--cream); }
+.gsrow .gssub { color: var(--grey); font-size: 12px; }
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 22px; }
 .kpi { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 15px 16px; }
 .kpi .label { font-size: 12px; color: var(--grey); margin-bottom: 6px; }
@@ -400,7 +404,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r15'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r16'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -901,6 +905,10 @@ async function renderDashboard(){
       </div>
     </div>
   </div>
+  <div class="panel" style="padding:14px 18px;">
+    <input id="gsBox" type="search" autocomplete="off" placeholder="&#128269;  Search students, staff, documents, receipts, pages…  (you only see what your access allows)" oninput="gsOnInput(this.value)" style="width:100%;font-size:15px;padding:11px 14px;">
+    <div id="gsResults"></div>
+  </div>
   ${mineHtml}
   ${anyKpi ? `<div class="kpis">
     ${showStudentCards ? `<div class="kpi clickable" onclick="dashOpen('students')"><div class="label">Active Students</div><div class="value">${active.length}</div><div class="note">${bySection.Nursery} Nursery/PN · ${bySection.Primary} Primary · ${bySection.Secondary} JSS · ${byGender.Male||0}M / ${byGender.Female||0}F</div></div>` : ''}
@@ -1171,6 +1179,7 @@ async function renderStudents(){
 function openStudent(id){ openStudentId = id; render(); }
 
 async function renderStudentDetail(){
+  if (!('deletion_hold_days' in (SETTINGS_CACHE || {}))) { try { await loadSettings(); } catch(e) {} }
   const { data: s, error } = await sb.from('students').select('*').eq('id', openStudentId).maybeSingle();
   if (error || !s) return `<div class="panel"><div class="empty">Student not found.</div></div>`;
   if (!canAccessClass(s.class_id, 'students')) return `<div class="panel"><div class="empty">That student is not in one of your assigned classes.</div></div>`;
@@ -1186,13 +1195,15 @@ async function renderStudentDetail(){
         </div>
       </div>
       <div class="row">
-        <button class="btn secondary small" onclick='openStudentForm(${JSON.stringify(s).replace(/'/g,"&apos;")})'>Edit</button>
+        ${(ACCESS_MODE !== 'rbac' || hasPerm('edit_student')) ? `<button class="btn secondary small" onclick='openStudentForm(${JSON.stringify(s).replace(/'/g,"&apos;")})'>Edit</button>` : ''}
         <button class="btn ghost small" onclick="printIdCard('student','${s.id}')">ID Card</button>
         ${hasPerm('promote_students') ? `<button class="btn ghost small" onclick="reissueIdCard('student','${s.id}')">Reissue ID</button>` : ''}
         <button class="btn maroon small" onclick="printReportCard('${s.id}')">Report Card</button>
+        ${deleteButtonHtml('student', s)}
       </div>
     </div>
   </div>
+  ${deletionBoxHtml('student', s)}
   <div class="panel">
     <div class="fgrid">
       <div><div class="field"><label>Student ID</label><div class="mono">${esc(s.student_id||'—')}</div></div></div>
@@ -1663,6 +1674,7 @@ async function renderSettingsTab(){
   const { data: staffAll } = await sb.from('staff').select('id,name,staff_id');
   const staffById = {}; (staffAll || []).forEach(s => { staffById[s.id] = s; });
   const loginName = p => { const s = staffById[p.staff_record_id]; return (!p.name || looksLikeUid(p.name)) ? (s ? s.name : null) : p.name; };
+  const delPanel = await deletionPanelHtml();
   return `
   <div class="panel">
     <h2>Current Term</h2>
@@ -1689,6 +1701,7 @@ async function renderSettingsTab(){
     <div id="subjectListContainer">${renderSubjectEditor(settingsSubjSection)}</div>
   </div>
   ${renderBackupPanel()}
+  ${delPanel}
   <div class="panel">
     <h2>Staff Logins</h2>
     <div class="desc">Everyone who has a login, and which role they're assigned.</div>
@@ -1706,7 +1719,7 @@ async function renderSettingsTab(){
         <td class="mono">${esc(staffById[p.staff_record_id]?.staff_id || '—')}</td>
         <td>${esc(ROLE_LABELS[p.role]||p.role)}</td>
         <td>${(p.classes_assigned||[]).map(c=>classById(c)?.name||c).join(', ')||'—'}</td>
-        <td class="right"><button class="iconbtn" onclick='openEditProfileRole(${JSON.stringify(p).replace(/'/g,"&apos;")})'>Edit</button></td>
+        <td class="right"><button class="iconbtn" onclick='openEditProfileRole(${JSON.stringify(p).replace(/'/g,"&apos;")})'>Edit</button>${(ACCESS_MODE === 'rbac' && hasPerm('assign_roles') && p.id !== MY_PROFILE?.id) ? ` <button class="iconbtn" data-n="${esc(loginName(p) || 'this login')}" onclick="openRemoveLogin('${p.id}', this.dataset.n)">Remove login</button>` : ''}</td>
       </tr>`).join('')}
     </table></div>
   </div>
@@ -1830,6 +1843,187 @@ async function saveProfileRole(profileId){
     closeModal(); toast('Updated.'); renderTabAsync();
   } catch(e){ toast('Could not save: ' + e.message); }
 }
+
+// =====================================================================
+// RELEASE 3 - audited deletion, login removal, dashboard search
+// =====================================================================
+function delHoldDays(){ const n = SETTINGS_CACHE && SETTINGS_CACHE.deletion_hold_days; return (typeof n === 'number') ? n : 30; }
+function delDue(rec){ return new Date(new Date(rec.delete_requested_at).getTime() + delHoldDays() * 86400000); }
+function delEligible(rec){ return !!rec.delete_requested_at && Date.now() >= delDue(rec).getTime(); }
+const delErr = e => /function .*(request_record_deletion|delete_marked_record|cancel_record_deletion|deletion_impact|remove_staff_login|set_deletion_hold_days)|schema cache/i.test((e && e.message) || '') ? 'This needs SQL file 24 to be installed first.' : ((e && e.message) || 'Something went wrong.');
+const dateOnly = v => String(v || '').slice(0, 10);
+function deleteButtonHtml(kind, rec){
+  if (!rec || !('delete_requested_at' in rec) || rec.delete_requested_at) return '';
+  if (!hasPerm(kind === 'student' ? 'delete_student' : 'delete_staff')) return '';
+  return `<button class="btn ghost small" style="color:var(--bad);border-color:var(--bad);" data-n="${esc(rec.name)}" onclick="openDeleteRequest('${kind}','${rec.id}',this.dataset.n)">Delete&hellip;</button>`;
+}
+function deletionBoxHtml(kind, rec){
+  if (!rec || !rec.delete_requested_at) return '';
+  if (!hasPerm(kind === 'student' ? 'delete_student' : 'delete_staff')) return '';
+  const ok = delEligible(rec), due = delDue(rec);
+  return `<div class="bignote" style="border-left:4px solid var(--bad);margin-bottom:14px;">
+    <strong>Marked for deletion</strong> by ${esc(rec.delete_requested_by || '—')} on ${esc(dateOnly(rec.delete_requested_at))}. Reason: ${esc(rec.delete_reason || '—')}<br>
+    ${ok ? 'The audit hold is over, so it can be deleted permanently now.' : `Audit hold: it can be deleted permanently from <strong>${esc(dateOnly(due.toISOString()))}</strong>.`}
+    <div class="row" style="margin-top:8px;">
+      ${ok ? `<button class="btn maroon small" data-n="${esc(rec.name)}" onclick="openDeleteFinal('${kind}','${rec.id}',this.dataset.n)">Delete permanently&hellip;</button>` : ''}
+      <button class="btn secondary small" onclick="cancelDeletion('${kind}','${rec.id}')">Cancel deletion</button>
+    </div></div>`;
+}
+function deleteImpactText(kind, imp){
+  if (!imp) return '';
+  return kind === 'student'
+    ? `${imp.fee_payments} fee payment(s), ${imp.results} result row(s) and ${imp.attendance} attendance row(s)`
+    : `${imp.attendance} attendance row(s), ${imp.qualifications} qualification(s) and ${imp.promotions} promotion record(s)`;
+}
+async function openDeleteRequest(kind, id, name){
+  let imp;
+  try { const r = await sb.rpc('deletion_impact', { p_entity: kind, p_id: id }); if (r.error) throw r.error; imp = r.data; } catch(e) { toast(delErr(e)); return; }
+  const hold = delHoldDays();
+  openModal(`
+    <h3>Delete ${esc(name)}?</h3>
+    <div class="msub">Nothing is deleted yet. This marks the record for deletion and starts the audit hold${hold ? ` of <strong>${hold} day(s)</strong>` : ' (set to 0 days, so it can be deleted straight after)'}. Until it is deleted you can cancel at any time.</div>
+    <div class="bignote" style="margin-bottom:12px;">When it is finally deleted, this goes with it: ${deleteImpactText(kind, imp)}. A full copy of the record stays in the audit log.${imp.logins ? '<br><strong>This person still has a login &mdash; remove it first (Settings &rarr; Staff Logins).</strong>' : ''}</div>
+    <div class="field"><label>Reason (required &mdash; kept in the audit log)</label><textarea id="del_reason" rows="3" placeholder="e.g. Test entry / entered twice / wrong person"></textarea></div>
+    <div id="delStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn maroon" id="delBtn" onclick="submitDeleteRequest('${kind}','${id}')">Mark for deletion</button></div>`);
+}
+async function submitDeleteRequest(kind, id){
+  const reason = (document.getElementById('del_reason').value || '').trim();
+  const st = document.getElementById('delStatus'), btn = document.getElementById('delBtn');
+  if (reason.length < 5) { st.textContent = 'Give a reason (a few words) for the audit record.'; return; }
+  btn.disabled = true; st.textContent = 'Saving…';
+  const { data, error } = await sb.rpc('request_record_deletion', { p_entity: kind, p_id: id, p_reason: reason });
+  if (error) { btn.disabled = false; st.textContent = delErr(error); return; }
+  closeModal(); toast('Marked for deletion.'); renderTabAsync();
+}
+async function cancelDeletion(kind, id){
+  if (!confirm('Cancel the deletion request? The record stays as it is.')) return;
+  const { error } = await sb.rpc('cancel_record_deletion', { p_entity: kind, p_id: id });
+  if (error) { toast(delErr(error)); return; }
+  toast('Deletion cancelled.'); renderTabAsync();
+}
+async function openDeleteFinal(kind, id, name){
+  let imp;
+  try { const r = await sb.rpc('deletion_impact', { p_entity: kind, p_id: id }); if (r.error) throw r.error; imp = r.data; } catch(e) { toast(delErr(e)); return; }
+  openModal(`
+    <h3>Delete ${esc(name)} permanently?</h3>
+    <div class="msub">This cannot be undone. It removes the record together with ${deleteImpactText(kind, imp)}. A full copy is kept in the audit log.</div>
+    ${imp.logins ? '<div class="bignote" style="margin-bottom:12px;"><strong>This person still has a login.</strong> Remove it first in Settings &rarr; Staff Logins.</div>' : ''}
+    <div class="field"><label>Type DELETE to confirm</label><input id="del_confirm" autocomplete="off"></div>
+    <div id="delStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn maroon" id="delBtn" onclick="submitDeleteFinal('${kind}','${id}')">Delete permanently</button></div>`);
+}
+async function submitDeleteFinal(kind, id){
+  const st = document.getElementById('delStatus'), btn = document.getElementById('delBtn');
+  if ((document.getElementById('del_confirm').value || '').trim() !== 'DELETE') { st.textContent = 'Type DELETE (capital letters) to confirm.'; return; }
+  btn.disabled = true; st.textContent = 'Deleting…';
+  const { data, error } = await sb.rpc('delete_marked_record', { p_entity: kind, p_id: id });
+  if (error) { btn.disabled = false; st.textContent = delErr(error); return; }
+  closeModal(); if (kind === 'student') openStudentId = null; else openStaffProfileId = null;
+  toast('Deleted.'); renderTabAsync();
+}
+async function deletionPanelHtml(){
+  if (!SETTINGS_CACHE || !('deletion_hold_days' in SETTINGS_CACHE)) return '';
+  if (!hasAnyPerm(['delete_student', 'delete_staff', 'full_access'])) return '';
+  let rows = [];
+  try {
+    const [a, b] = await Promise.all([
+      hasPerm('delete_student') ? sb.from('students').select('id,name,student_id,delete_requested_at,delete_requested_by,delete_reason').not('delete_requested_at', 'is', null) : Promise.resolve({ data: [] }),
+      hasPerm('delete_staff') ? sb.from('staff').select('id,name,staff_id,delete_requested_at,delete_requested_by,delete_reason').not('delete_requested_at', 'is', null) : Promise.resolve({ data: [] }),
+    ]);
+    rows = [...(a.data || []).map(r => ({ ...r, kind: 'student' })), ...(b.data || []).map(r => ({ ...r, kind: 'staff' }))].sort((x, y) => String(x.delete_requested_at).localeCompare(String(y.delete_requested_at)));
+  } catch(e) { rows = []; }
+  const hold = delHoldDays();
+  return `
+  <div class="panel">
+    <h2>Deleting records</h2>
+    <div class="desc">A student or staff record is deleted in two steps: first it is <strong>marked for deletion</strong> (with a reason), then, once the audit hold is over, it can be <strong>deleted permanently</strong>. Every step is written to the audit log, which keeps a full copy of the deleted record.</div>
+    <div class="row" style="align-items:center;margin-bottom:12px;">
+      <label style="margin:0;">Audit hold (days)</label>
+      <input id="del_hold" type="number" min="0" max="365" value="${hold}" style="width:90px;" ${hasPerm('full_access') ? '' : 'disabled'}>
+      ${hasPerm('full_access') ? '<button class="btn small" onclick="saveDeletionHold()">Save</button>' : '<span class="desc" style="margin:0;">Only the Proprietor can change this.</span>'}
+    </div>
+    ${rows.length ? `<div class="tablewrap"><table>
+      <tr><th>Type</th><th>Name</th><th>ID</th><th>Marked by</th><th>Reason</th><th>Can be deleted from</th><th></th></tr>
+      ${rows.map(r => `<tr>
+        <td>${r.kind === 'student' ? 'Student' : 'Staff'}</td><td>${esc(r.name)}</td><td class="mono">${esc(r.student_id || r.staff_id || '—')}</td>
+        <td>${esc(r.delete_requested_by || '—')}<div style="font-size:11px;color:var(--grey);">${esc(dateOnly(r.delete_requested_at))}</div></td>
+        <td style="font-size:12.5px;">${esc(r.delete_reason || '')}</td>
+        <td class="mono">${esc(dateOnly(delDue(r).toISOString()))}</td>
+        <td class="right">${delEligible(r) ? `<button class="iconbtn" style="color:var(--bad);" data-n="${esc(r.name)}" onclick="openDeleteFinal('${r.kind}','${r.id}',this.dataset.n)">Delete permanently</button>` : ''} <button class="iconbtn" onclick="cancelDeletion('${r.kind}','${r.id}')">Cancel</button></td>
+      </tr>`).join('')}
+    </table></div>` : '<div class="desc">No records are marked for deletion.</div>'}
+  </div>`;
+}
+async function saveDeletionHold(){
+  const n = parseInt(document.getElementById('del_hold').value, 10);
+  if (!(n >= 0 && n <= 365)) { toast('Choose a number of days from 0 to 365.'); return; }
+  const { error } = await sb.rpc('set_deletion_hold_days', { p_days: n });
+  if (error) { toast(delErr(error)); return; }
+  await loadSettings(); toast('Audit hold set to ' + n + ' day(s).'); renderTabAsync();
+}
+function openRemoveLogin(userId, name){
+  openModal(`
+    <h3>Remove login &mdash; ${esc(name)}</h3>
+    <div class="msub">This person will no longer be able to use the app. Their <strong>staff record is kept</strong>. Their role and privilege changes on this login are removed.</div>
+    <div class="bignote" style="margin-bottom:12px;">To give access back later: use <strong>+ Add Staff Login</strong> with the same User UID (from Supabase &rarr; Authentication &rarr; Users) and choose their role again. To also stop them signing in to Supabase itself, open their user in Supabase and use Ban user or Delete user &mdash; the app is not allowed to do that part.</div>
+    <div class="field"><label>Reason (required &mdash; kept in the audit log)</label><input id="rl_reason" placeholder="e.g. Left the school / new login being created"></div>
+    <div id="rlStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn maroon" id="rlBtn" onclick="submitRemoveLogin('${userId}')">Remove login</button></div>`);
+}
+async function submitRemoveLogin(userId){
+  const reason = (document.getElementById('rl_reason').value || '').trim();
+  const st = document.getElementById('rlStatus'), btn = document.getElementById('rlBtn');
+  if (reason.length < 3) { st.textContent = 'A reason is required.'; return; }
+  btn.disabled = true; st.textContent = 'Removing…';
+  const { data, error } = await sb.rpc('remove_staff_login', { p_user: userId, p_reason: reason });
+  if (error) { btn.disabled = false; st.textContent = delErr(error); return; }
+  closeModal(); toast('Login removed. The staff record is kept.'); renderTabAsync();
+}
+
+// ---- dashboard search: only searches what the signed-in person is allowed to see (the database enforces it too) ----
+let GS_TOKEN = 0, GS_TIMER = null;
+function gsOnInput(v){ clearTimeout(GS_TIMER); GS_TIMER = setTimeout(() => gsRun(v), 250); }
+async function gsRun(raw){
+  const box = document.getElementById('gsResults'); if (!box) return;
+  const q = String(raw || '').trim().replace(/[^\p{L}\p{N}\s'.\-\/@+]/gu, '').slice(0, 40);
+  if (q.length < 2) { box.innerHTML = ''; return; }
+  const my = ++GS_TOKEN; box.innerHTML = '<div class="desc" style="margin:8px 0 0;">Searching&hellip;</div>';
+  const like = `%${q}%`, ql = q.toLowerCase();
+  const jobs = [];
+  if (hasPerm('view_students')) jobs.push((async () => {
+    const { data } = await sb.from('students').select('id,name,student_id,class_id,status,admission_form_number,parent_name,parent_phone')
+      .or(`name.ilike.${like},student_id.ilike.${like},admission_form_number.ilike.${like},parent_name.ilike.${like},parent_phone.ilike.${like}`).limit(10);
+    return { title: 'Students', rows: (data || []).filter(s => canAccessClass(s.class_id, 'students')).slice(0, 8).map(s => ({ main: s.name, sub: `${s.student_id || ''} · ${classById(s.class_id)?.name || ''}${s.status && s.status !== 'active' ? ' · ' + s.status : ''}`, click: `dashGoStudent('${s.id}')` })) };
+  })());
+  if (hasPerm('view_staff')) jobs.push((async () => {
+    const { data } = await sb.from('staff').select('id,name,staff_id,role,department,status').or(`name.ilike.${like},staff_id.ilike.${like},role.ilike.${like},department.ilike.${like}`).limit(8);
+    return { title: 'Staff', rows: (data || []).map(s => ({ main: s.name, sub: `${s.staff_id || ''} · ${s.role || ''}${s.department ? ' · ' + s.department : ''}`, click: `dashGoStaff('${s.id}')` })) };
+  })());
+  if (hasPerm('view_admissions')) jobs.push((async () => {
+    const { data } = await sb.from('admissions').select('id,name,status,class_applied_for,parent_name').or(`name.ilike.${like},parent_name.ilike.${like}`).limit(6);
+    return { title: 'Admissions', rows: (data || []).map(a => ({ main: a.name, sub: `${a.status || ''}${a.class_applied_for ? ' · ' + a.class_applied_for : ''}`, click: `dashGo('admissions')` })) };
+  })());
+  if (hasPerm('view_fees')) jobs.push((async () => {
+    const { data } = await sb.from('fee_payments').select('id,receipt_no,amount,date').ilike('receipt_no', like).limit(6);
+    return { title: 'Receipts', rows: (data || []).map(p => ({ main: p.receipt_no, sub: `${naira(p.amount)} · ${p.date || ''}`, click: `dashGo('fees')` })) };
+  })());
+  jobs.push((async () => {
+    const { data } = await sb.from('documents').select('id,title,category,url').or(`title.ilike.${like},category.ilike.${like}`).limit(6);
+    return { title: 'Documents', rows: (data || []).map(d => ({ main: d.title, sub: d.category || '', href: d.url })) };
+  })());
+  const pages = [];
+  NAV_GROUPS.forEach(g => g.items.forEach(([tab, ic, label]) => { if (can(tab) && tab !== 'dashboard' && label.toLowerCase().includes(ql)) pages.push({ main: label, sub: 'Open this page', click: `dashGo('${tab}')` }); }));
+  if (pages.length) jobs.push(Promise.resolve({ title: 'Pages', rows: pages.slice(0, 6) }));
+  const out = await Promise.allSettled(jobs);
+  if (my !== GS_TOKEN) return;   // a newer search has started
+  const groups = out.filter(r => r.status === 'fulfilled' && r.value.rows.length).map(r => r.value);
+  box.innerHTML = groups.length ? groups.map(g => `<div class="gshead">${esc(g.title)}</div>` + g.rows.map(r => r.href
+      ? `<a class="gsrow" href="${esc(r.href)}" target="_blank" rel="noopener"><span><strong>${esc(r.main)}</strong></span><span class="gssub">${esc(r.sub)}</span></a>`
+      : `<div class="gsrow" onclick="${r.click}"><span><strong>${esc(r.main)}</strong></span><span class="gssub">${esc(r.sub)}</span></div>`).join('')).join('')
+    : '<div class="desc" style="margin:8px 0 0;">No matches among the records you are allowed to see.</div>';
+}
+
 let settingsSubjSection = 'Nursery';
 function renderSubjectEditor(section){
   const list = getSubjects(section);
@@ -3033,6 +3227,7 @@ async function renderTimetable(){
   const grid = {};
   rows.forEach(r => { grid[r.day+'-'+r.period] = r; });
   const { data: docs } = await sb.from('documents').select('*').eq('category', 'Timetable - ' + timetableSection);
+  const canTT = hasPerm('manage_timetable');   // everyone may VIEW the timetable; only people granted this may change it
 
   return `
   <div class="panel">
@@ -3041,13 +3236,13 @@ async function renderTimetable(){
         ${['Nursery','Primary','Secondary'].map(sec => `<button class="tabbtn ${timetableSection===sec?'active':''}" onclick="timetableSection='${sec}';renderTabAsync();">${sec}</button>`).join('')}
       </div>
       <div class="row">
-        <button class="btn secondary small" onclick="openEditTimetableDays()">Edit Days</button>
+        ${canTT ? `<button class="btn secondary small" onclick="openEditTimetableDays()">Edit Days</button>
         <button class="btn secondary small" onclick="openEditTimetablePeriods()">Edit Time Slots</button>
-        <button class="btn secondary small" onclick="openTimetableUpload()">&#8613; Upload File</button>
+        <button class="btn secondary small" onclick="openTimetableUpload()">&#8613; Upload File</button>` : ''}
         <button class="btn ghost small" onclick="printTimetable()">Print / Export</button>
       </div>
     </div>
-    <div class="desc">Click any cell to edit. ${timetableSection} section.</div>
+    <div class="desc">${canTT ? 'Click any cell to edit.' : 'View only.'} ${timetableSection} section.</div>
     ${(docs&&docs[0]) ? `<div class="bignote" style="margin-bottom:12px;">Uploaded file on record: <a href="${docs[0].url}" target="_blank" rel="noopener">${esc(docs[0].title)}</a></div>` : ''}
     <div class="tablewrap"><table>
       <tr><th>Day</th>${periods.map(p=>`<th>${esc(p.time)}</th>`).join('')}</tr>
@@ -3055,7 +3250,7 @@ async function renderTimetable(){
         <td><strong>${d}</strong></td>
         ${periods.map(p => {
           const cell = grid[d+'-'+p.n] || {};
-          return `<td class="clickable" style="min-width:100px;" onclick="openTimetableCellForm('${d}',${p.n},'${esc(p.time)}')">
+          return `<td class="${canTT ? 'clickable' : ''}" style="min-width:100px;" ${canTT ? `onclick="openTimetableCellForm('${d}',${p.n},'${esc(p.time)}')"` : ''}>
             ${cell.subject ? `<div style="font-weight:600;font-size:12px;">${esc(cell.subject)}</div><div style="font-size:10.5px;color:var(--grey);">${esc(cell.teacher||'')}</div>` : `<span style="color:#ccc;">—</span>`}
           </td>`;
         }).join('')}
@@ -3064,6 +3259,7 @@ async function renderTimetable(){
   </div>`;
 }
 function openTimetableCellForm(day, period, periodTime){
+  if (!hasPerm('manage_timetable')) { toast('You do not have permission to change the timetable.'); return; }
   openModal(`
     <h3>${timetableSection} — ${day}, ${periodTime}</h3>
     <div class="field"><label>Subject</label><input id="tt_subject"></div>
@@ -3163,6 +3359,7 @@ async function saveTimetablePeriods(){
   } catch(e){ toast('Could not save: ' + e.message); }
 }
 function openTimetableUpload(){
+  if (!hasPerm('manage_timetable')) { toast('You do not have permission to change the timetable.'); return; }
   openModal(`
     <h3>Upload Timetable — ${timetableSection}</h3>
     <div class="msub">CSV or Excel files auto-fill the grid (columns: <strong>Day, Period, Subject, Teacher</strong>; Period is a number matching the time slots). Word, PDF or image files are stored as a reference document you can open.</div>
@@ -3248,11 +3445,12 @@ async function printTimetable(){
 const DOCUMENT_CATEGORIES = ['Policy','Staff Handbook','Disciplinary Handbook','Fees Breakdown','Brochure','Other'];
 async function renderDocuments(){
   const { data: docs } = await sb.from('documents').select('*').not('category','ilike','Timetable%').order('uploaded_at', { ascending: false });
+  const canDoc = hasPerm('manage_documents');   // everyone may OPEN documents; only people granted this may upload or delete
   return `
   <div class="panel">
     <div class="row between" style="margin-bottom:14px;">
       <div class="desc" style="margin:0;">School policies, handbooks, fee breakdowns, and the brochure — open to everyone.</div>
-      <button class="btn" onclick="openDocumentUpload()">&#8613; Upload Document</button>
+      ${canDoc ? `<button class="btn" onclick="openDocumentUpload()">&#8613; Upload Document</button>` : ''}
     </div>
     ${(!docs||docs.length===0) ? `<div class="empty">No documents uploaded yet.</div>` : `
     <div class="tablewrap"><table>
@@ -3260,12 +3458,13 @@ async function renderDocuments(){
       ${docs.map(d => `<tr>
         <td><strong>${esc(d.title)}</strong></td><td><span class="pill muted">${esc(d.category)}</span></td>
         <td class="mono">${(d.uploaded_at||'').slice(0,10)}</td><td>${esc(d.uploaded_by||'—')}</td>
-        <td class="right"><a class="btn small ghost" href="${d.url}" target="_blank" rel="noopener">View</a> <button class="iconbtn" onclick="deleteDocument('${d.id}')">Delete</button></td>
+        <td class="right"><a class="btn small ghost" href="${d.url}" target="_blank" rel="noopener">View</a> ${canDoc ? `<button class="iconbtn" onclick="deleteDocument('${d.id}')">Delete</button>` : ''}</td>
       </tr>`).join('')}
     </table></div>`}
   </div>`;
 }
 function openDocumentUpload(){
+  if (!hasPerm('manage_documents')) { toast('You do not have permission to upload documents.'); return; }
   openModal(`
     <h3>Upload Document</h3>
     <div class="field"><label>Title *</label><input id="doc_title"></div>
@@ -3293,6 +3492,7 @@ async function handleDocumentUpload(){
   } catch(e) { document.getElementById('docUploadBtn').disabled = false; document.getElementById('docUploadStatus').textContent = 'Could not upload: ' + e.message; }
 }
 async function deleteDocument(id){
+  if (!hasPerm('manage_documents')) { toast('You do not have permission to delete documents.'); return; }
   if (!confirm('Delete this document?')) return;
   try {
     const { error } = await sb.from('documents').delete().eq('id', id);
@@ -5218,9 +5418,11 @@ async function renderStaffProfile(){
         ${hasPerm('manage_por') && !mine ? `<button class="btn secondary small" onclick="openAssignPor('${id}')">Assign responsibility</button>` : ''}
         ${hasPerm('assign_roles') && !mine ? `<button class="btn secondary small" onclick="openAssignRoleFor('${id}')">Assign role</button>` : ''}
         <button class="btn ghost small" onclick="printIdCard('staff','${id}')">ID card</button>
+        ${mine ? '' : deleteButtonHtml('staff', s)}
       </div>
     </div>
   </div>
+  ${deletionBoxHtml('staff', s)}
   ${(!s.career_rank || !verified || !L) && (hasPerm('edit_staff') || hasPerm('assign_career_rank')) ? checklist : ''}
   <div class="fgrid" style="align-items:start;">
     <div class="panel"><h2>Professional</h2><table>
