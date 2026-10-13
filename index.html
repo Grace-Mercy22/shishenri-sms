@@ -404,7 +404,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r17'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r18'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -1106,6 +1106,18 @@ async function dashBody(){
 // STUDENTS
 // =====================================================================
 let studentFilter = { classId: 'ALL', q: '' };
+// how lists are ordered: 'name' = A-Z, 'id' = serial order of the ID numbers. Remembered on this device only.
+let LIST_SORT = (() => { try { return JSON.parse(localStorage.getItem('shs_list_sort') || '{}') || {}; } catch(e) { return {}; } })();
+function setListSort(kind, v){ LIST_SORT[kind] = v; try { localStorage.setItem('shs_list_sort', JSON.stringify(LIST_SORT)); } catch(e) {} renderTabAsync(); }
+function sortRows(rows, kind, idField){
+  const byName = (a, b) => String(a.name||'').localeCompare(String(b.name||''), undefined, { sensitivity: 'base' });
+  const byId = (a, b) => { const x = String(a[idField]||''), y = String(b[idField]||''); if (!x !== !y) return x ? -1 : 1; return x.localeCompare(y, undefined, { numeric: true }) || byName(a, b); };
+  return [...rows].sort(LIST_SORT[kind] === 'id' ? byId : byName);
+}
+function sortSelectHtml(kind){
+  const v = LIST_SORT[kind] === 'id' ? 'id' : 'name';
+  return `<select onchange="setListSort('${kind}',this.value)" title="Order of the list"><option value="name" ${v==='name'?'selected':''}>Order: A–Z by name</option><option value="id" ${v==='id'?'selected':''}>Order: serial by ID</option></select>`;
+}
 let openStudentId = null;
 
 async function fetchStudents(){
@@ -1142,6 +1154,7 @@ async function renderStudents(){
   if (scoped) rows = rows.filter(s => myAssignedClasses('students').includes(s.class_id));
   rows = rows.filter(s => studentFilter.classId === 'ALL' || s.class_id === studentFilter.classId)
               .filter(s => !studentFilter.q || (s.name||'').toLowerCase().includes(studentFilter.q.toLowerCase()));
+  rows = sortRows(rows, 'students', 'student_id');
   VISIBLE_STUDENT_IDS = rows.map(s => s.id);
 
   return `
@@ -1156,6 +1169,7 @@ async function renderStudents(){
         <div class="searchbox"><span class="sic">&#128269;</span>
           <input placeholder="Search by name…" value="${esc(studentFilter.q)}" oninput="studentFilter.q=this.value;renderTabAsync();" style="width:200px;">
         </div>
+        ${sortSelectHtml('students')}
       </div>
       ${hasPerm('create_student') ? `<div class="row"><button class="btn" onclick="openStudentForm()">+ Add Student</button><button class="btn secondary" onclick="openImportModal()">&#8613; Import</button>${hasPerm('promote_students') ? `<button class="btn secondary" onclick="openBulkMove()">Move selected (<span id="selCount">${selectedStudentIds.size}</span>)</button><button class="btn maroon" onclick="openPromotionWizard()">Promote / Move Classes</button>` : ''}</div>` : ''}
     </div>
@@ -5475,9 +5489,11 @@ async function renderStaff(){
     && (!f.rank || (f.rank === 'none' ? !s.career_rank : String(s.career_rank) === f.rank))
     && (!f.dept || s.department === f.dept)
     && (f.status === 'all' || (f.status === 'active' ? isActiveStaff(s) : !isActiveStaff(s))));
+  const rowsSorted = sortRows(rows, 'staff', 'staff_id');
   return `<div class="panel">
     <div class="row between" style="margin-bottom:14px;flex-wrap:wrap;gap:8px;">
       <div class="row" style="flex-wrap:wrap;">
+        ${sortSelectHtml('staff')}
         <div class="searchbox"><span class="sic">&#128269;</span><input placeholder="Search name or ID…" value="${esc(f.q)}" oninput="staffFilter.q=this.value;renderTabAsync();" style="width:190px;"></div>
         <select onchange="staffFilter.rank=this.value;renderTabAsync();"><option value="">All ranks</option><option value="none" ${f.rank==='none'?'selected':''}>No rank yet</option>${(CAREER.ranks.length?CAREER.ranks:CAREER_RANKS_FALLBACK).map(r => `<option value="${r.rank}" ${f.rank===String(r.rank)?'selected':''}>${esc(r.code)} ${esc(r.designation)}</option>`).join('')}</select>
         <select onchange="staffFilter.dept=this.value;renderTabAsync();"><option value="">All departments</option>${depts.map(d => `<option ${f.dept===d?'selected':''}>${esc(d)}</option>`).join('')}</select>
@@ -5488,7 +5504,7 @@ async function renderStaff(){
     ${rows.length === 0 ? `<div class="empty"><div class="big">&#128100;</div>No staff match.</div>` : `
     <div class="tablewrap"><table>
       <tr><th>Staff ID</th><th>Name</th><th>Career rank</th><th>Position of responsibility</th><th>Department</th><th>System role</th><th>Status</th><th></th></tr>
-      ${rows.map(s => `<tr class="clickable" onclick="openStaffProfile('${s.id}')">
+      ${rowsSorted.map(s => `<tr class="clickable" onclick="openStaffProfile('${s.id}')">
         <td class="mono">${esc(s.staff_id || '—')}</td>
         <td><strong>${esc(s.name)}</strong><div style="font-size:11px;color:var(--grey);">${esc(s.role || '')}</div></td>
         <td>${rankBadge(s.career_rank)}</td>
