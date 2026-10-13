@@ -404,7 +404,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r16'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r17'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -1239,7 +1239,7 @@ async function openStudentForm(existing){
         <div id="f_photo_placeholder" style="width:78px;height:90px;border-radius:6px;border:1px dashed var(--line);display:${s.photo_url?'none':'flex'};align-items:center;justify-content:center;color:var(--grey);font-size:11px;text-align:center;">No photo</div>
       </div>
       <div style="flex:1;">
-        <div class="field"><label>Passport Photograph</label><input type="file" id="f_photo" accept="image/*" onchange="previewPhoto('f_photo','f_photo_preview','f_photo_placeholder')"></div>
+        <div class="field"><label>Passport Photograph</label>${photoPickerHtml('f_photo','f_photo_preview','f_photo_placeholder')}</div>
       </div>
     </div>
     <div class="fgrid">
@@ -1282,7 +1282,40 @@ function previewPhoto(inputId, imgId, placeholderId){
   };
   reader.readAsDataURL(file);
 }
+function photoPickerHtml(id, imgId, phId){
+  // two buttons: take a picture with the phone camera, or pick one already stored on the device
+  return `<div class="row" style="gap:8px;flex-wrap:wrap;">
+    <label class="btn secondary small" style="cursor:pointer;">&#128247; Take photo<input type="file" id="${id}_cam" accept="image/*" capture="user" style="display:none" onchange="photoChosen('${id}','cam','${imgId}','${phId}')"></label>
+    <label class="btn secondary small" style="cursor:pointer;">&#128444; Choose from device<input type="file" id="${id}" accept="image/*" style="display:none" onchange="photoChosen('${id}','file','${imgId}','${phId}')"></label>
+  </div><div class="desc" id="${id}_name" style="margin:6px 0 0;"></div>`;
+}
+function pickedPhoto(id){
+  const c = document.getElementById(id + '_cam'), f = document.getElementById(id);
+  return (c && c.files && c.files[0]) || (f && f.files && f.files[0]) || null;
+}
+function photoChosen(id, which, imgId, phId){
+  const other = document.getElementById(which === 'cam' ? id : id + '_cam'); if (other) other.value = '';  // only one picture is kept
+  const file = pickedPhoto(id); if (!file) return;
+  const lab = document.getElementById(id + '_name'); if (lab) lab.textContent = (which === 'cam' ? 'Photo taken' : 'Selected: ' + file.name) + ' - it is saved when you press Save.';
+  const reader = new FileReader();
+  reader.onload = e => { const im = document.getElementById(imgId), ph = document.getElementById(phId); if (im) { im.src = e.target.result; im.style.display = 'block'; } if (ph) ph.style.display = 'none'; };
+  reader.readAsDataURL(file);
+}
+async function shrinkPhoto(file){
+  // phone cameras produce 3-10 MB pictures; passport photos only need ~1200px. Falls back to the original on any problem.
+  try {
+    if (!file.type || !file.type.startsWith('image/') || file.type === 'image/gif' || file.size < 1024 * 1024) return file;
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => createImageBitmap(file));
+    const sc = Math.min(1, 1200 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas'); c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+    if (!blob || blob.size >= file.size) return file;
+    return new File([blob], 'photo.jpg', { type: 'image/jpeg' });
+  } catch (e) { return file; }
+}
 async function uploadPhoto(file, prefix){
+  file = await shrinkPhoto(file);
   const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
   const path = `${prefix}/${uid()}.${ext}`;
   // upsert:false — file names are unique, and upsert would need extra SELECT/UPDATE permissions.
@@ -1318,9 +1351,17 @@ async function saveStudent(existingId){
       if (!confirm(`This pupil's record is marked "${label}" and carries Student ID ${prev.student_id||''}. Reactivating reuses that same ID.\n\nIf this pupil is genuinely RETURNING after leaving, best practice is to create a brand-new Student record with a new ID and leave this one as history.\n\nOK = reactivate this SAME record anyway. Cancel = stop.`)) return;
     }
   }
-  const photoFile = document.getElementById('f_photo').files[0];
+  const photoFile = pickedPhoto('f_photo');
   btn.disabled = true; statusEl.textContent = 'Saving…';
   try {
+    if (!existingId) {
+      const tok = nameKey(name).split(' ').sort((a, b) => b.length - a.length)[0] || '';
+      const { data: like } = tok ? await sb.from('students').select('student_id,name,class_id,dob').ilike('name', '%' + tok + '%').limit(300) : { data: [] };
+      const hit = studentDupHit(like || [], name, data.dob);
+      if (hit && !confirm(`A pupil with this name is already on file:\n\n${hit.name} - ${hit.student_id || 'no ID'} - ${(classById(hit.class_id)||{}).name || hit.class_id}\n\nPress OK only if this is a DIFFERENT child with the same name. Press Cancel to stop (nothing is saved).`)) {
+        btn.disabled = false; statusEl.textContent = ''; return;
+      }
+    }
     if (photoFile) {
       statusEl.textContent = 'Uploading photo…';
       data.photo_url = await uploadPhoto(photoFile, 'students');
@@ -1345,6 +1386,37 @@ async function saveStudent(existingId){
 }
 
 // ---------- CSV/Excel import ----------
+// ---------- duplicate protection (release 4) ----------
+function nameKey(n){ return String(n||'').toLowerCase().replace(/[^a-z\s]/g,' ').split(/\s+/).filter(Boolean).sort().join(' '); }
+function isoDob(v){ const s = String(v||'').trim(); return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0,10) : ''; }
+async function fetchEveryRow(table, cols){
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb.from(table).select(cols).order('id').range(from, from + 999);
+    if (error) throw error;
+    out.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return out;
+}
+// same name (any word order / capitals) is the same pupil unless both have a date of birth and the dates differ
+function studentDupHit(list, name, dob){
+  const k = nameKey(name), d = isoDob(dob);
+  return k ? (list.filter(s => nameKey(s.name) === k).find(s => !(d && isoDob(s.dob) && isoDob(s.dob) !== d)) || null) : null;
+}
+function markImportDupes(rows, existing){
+  const idx = new Map();
+  const add = (k, o) => { if (!idx.has(k)) idx.set(k, []); idx.get(k).push(o); };
+  (existing||[]).forEach(s => add(nameKey(s.name), { dob: isoDob(s.dob), label: `${s.student_id || 'no ID'} · ${(classById(s.class_id)||{}).name || s.class_id}` }));
+  rows.forEach((r, i) => {
+    r.dup = ''; if (!r.valid) return;
+    const k = nameKey(r.name), d = isoDob(r.dob);
+    const hit = (idx.get(k) || []).find(o => !(d && o.dob && d !== o.dob));
+    if (hit) r.dup = hit.row != null ? `Repeated in this file (row ${hit.row})` : `Already in the system: ${hit.label}`;
+    if (!hit || r.force) add(k, { dob: d, row: i + 2 });
+  });
+}
+let IMPORTING = false;
 let IMPORT_ROWS = [];
 function openImportModal(){
   IMPORT_ROWS = [];
@@ -1381,7 +1453,12 @@ function handleImportFile(event){
   const file = event.target.files[0];
   if (!file) return;
   const ext = file.name.split('.').pop().toLowerCase();
-  const done = rows => { IMPORT_ROWS = rows.map(normaliseImportRow); renderImportPreview(); };
+  const done = async rows => {
+    IMPORT_ROWS = rows.map(normaliseImportRow);
+    document.getElementById('importPreviewArea').innerHTML = '<div class="desc">Checking the file against the students already in the system…</div>';
+    let existing = []; try { existing = await fetchEveryRow('students', 'id,name,class_id,dob,student_id'); } catch(e) {}
+    IMPORT_EXISTING = existing; markImportDupes(IMPORT_ROWS, existing); renderImportPreview();
+  };
   if (ext === 'csv') Papa.parse(file, { header: true, skipEmptyLines: true, complete: res => done(res.data) });
   else {
     const reader = new FileReader();
@@ -1389,30 +1466,63 @@ function handleImportFile(event){
     reader.readAsBinaryString(file);
   }
 }
+function importReady(r){ return r.valid && (!r.dup || r.force); }
+function toggleImportForce(i, on){ IMPORT_ROWS[i].force = !!on; markImportDupes(IMPORT_ROWS, IMPORT_EXISTING); renderImportPreview(); }
+let IMPORT_EXISTING = [];
 function renderImportPreview(){
-  const validCount = IMPORT_ROWS.filter(r=>r.valid).length;
+  const ready = IMPORT_ROWS.filter(importReady).length;
+  const dupSys = IMPORT_ROWS.filter(r => r.dup && /^Already/.test(r.dup)).length, dupFile = IMPORT_ROWS.filter(r => r.dup && /^Repeated/.test(r.dup)).length;
+  const bad = IMPORT_ROWS.filter(r => !r.valid).length;
+  const order = IMPORT_ROWS.map((r, i) => ({ r, i })).sort((x, y) => (y.r.dup ? 2 : !y.r.valid ? 1 : 0) - (x.r.dup ? 2 : !x.r.valid ? 1 : 0));
   document.getElementById('importPreviewArea').innerHTML = `
-    <div class="desc">${IMPORT_ROWS.length} row(s) read — <strong style="color:var(--ok);">${validCount} ready</strong>.</div>
-    <div class="tablewrap" style="max-height:240px;overflow-y:auto;"><table>
+    <div class="desc">${IMPORT_ROWS.length} row(s) read — <strong style="color:var(--ok);">${ready} ready to import</strong>${dupSys ? ` · <strong style="color:var(--bad);">${dupSys} already in the system (will be skipped)</strong>` : ''}${dupFile ? ` · <strong style="color:var(--bad);">${dupFile} repeated inside the file (will be skipped)</strong>` : ''}${bad ? ` · ${bad} incomplete (no name or unknown class)` : ''}.</div>
+    <div class="tablewrap" style="max-height:260px;overflow-y:auto;"><table>
       <tr><th>Name</th><th>Class</th><th>Gender</th><th></th></tr>
-      ${IMPORT_ROWS.slice(0,50).map(r=>`<tr><td>${esc(r.name)||'<em>missing</em>'}</td><td>${r.classId?esc(classById(r.classId).name):'<em>?</em>'}</td><td>${esc(r.gender)}</td><td>${r.valid?'<span class="pill ok">Ready</span>':'<span class="pill bad">Skip</span>'}</td></tr>`).join('')}
-    </table></div>`;
+      ${order.slice(0, 80).map(({ r, i }) => `<tr><td>${esc(r.name)||'<em>missing</em>'}</td><td>${r.classId?esc(classById(r.classId).name):'<em>?</em>'}</td><td>${esc(r.gender)}</td><td>${
+        r.dup ? `<span class="pill bad">Skip</span> <div style="font-size:11px;color:var(--grey);">${esc(r.dup)}</div><label style="font-size:11px;"><input type="checkbox" ${r.force?'checked':''} onchange="toggleImportForce(${i},this.checked)"> Import anyway (a different child with the same name)</label>`
+        : r.valid ? '<span class="pill ok">Ready</span>' : '<span class="pill bad">Skip</span>'}</td></tr>`).join('')}
+    </table></div>${order.length > 80 ? `<div class="desc">…and ${order.length - 80} more rows (all counted above).</div>` : ''}`;
   const btn = document.getElementById('importConfirmBtn');
-  btn.disabled = validCount === 0; btn.textContent = `Import ${validCount} Students`;
+  btn.disabled = ready === 0 || IMPORTING; btn.textContent = `Import ${ready} Students`;
 }
 async function confirmImport(){
-  const validRows = IMPORT_ROWS.filter(r=>r.valid);
-  let imported = 0;
-  for (const r of validRows) {
-    const studentId = await nextStudentId();
-    const { error } = await sb.from('students').insert({
-      name: r.name, class_id: r.classId, gender: r.gender, dob: r.dob || null,
-      admission_date: todayISO(), parent_name: r.parentName, parent_phone: r.parentPhone,
-      fee_category: r.feeCategory, status: 'active', student_id: studentId,
-    });
-    if (!error) imported++;
-  }
-  closeModal(); toast(`Imported ${imported} student(s).`); renderTabAsync();
+  if (IMPORTING) return;            // a second click while the first import is still running does nothing
+  IMPORTING = true;
+  const btn = document.getElementById('importConfirmBtn'), area = document.getElementById('importPreviewArea');
+  btn.disabled = true; btn.textContent = 'Importing… please wait';
+  document.querySelectorAll('#modalBody button.secondary, #modalBody .closeX').forEach(b => { if (b.classList.contains('closeX') || /cancel/i.test(b.textContent)) b.disabled = true; });
+  let imported = 0, failed = 0, firstErr = '';
+  try {
+    // look again right now, so nothing saved since the preview (or by an earlier click) is imported twice
+    const existing = await fetchEveryRow('students', 'id,name,class_id,dob,student_id');
+    markImportDupes(IMPORT_ROWS, existing);
+    const todo = IMPORT_ROWS.filter(importReady), skipped = IMPORT_ROWS.filter(r => r.valid && !importReady(r));
+    const yr = new Date().getFullYear(), pre = `SHS/${yr}/`, used = new Set();
+    existing.forEach(s => { const v = String(s.student_id || ''); if (v.startsWith(pre) && /^\d+$/.test(v.slice(pre.length))) used.add(Number(v.slice(pre.length))); });
+    let first = 1; try { const n = await nextStudentId(); if (n && n.startsWith(pre)) first = Number(n.slice(pre.length)) || 1; } catch(e) {}
+    const nextId = () => { let n = first; while (used.has(n)) n++; used.add(n); first = n + 1; return pre + String(n).padStart(3, '0'); };
+    const mk = r => ({ name: r.name, class_id: r.classId, gender: r.gender, dob: r.dob || null, admission_date: todayISO(), parent_name: r.parentName, parent_phone: r.parentPhone, fee_category: r.feeCategory, status: 'active', student_id: nextId() });
+    for (let i = 0; i < todo.length; i += 40) {
+      const chunk = todo.slice(i, i + 40), recs = chunk.map(mk);
+      area.innerHTML = `<div class="desc">Importing… ${Math.min(i + 40, todo.length)} of ${todo.length}. Please do not close this window or click again.</div>`;
+      const { error } = await sb.from('students').insert(recs);
+      if (!error) { imported += recs.length; continue; }
+      for (const rec of recs) {                 // the batch was refused: go one by one so one bad row cannot block the rest
+        let res = await sb.from('students').insert(rec);
+        if (res.error && /duplicate key.*student_id/.test(res.error.message)) { rec.student_id = await nextStudentId(); res = await sb.from('students').insert(rec); }
+        if (res.error) { failed++; firstErr = firstErr || `${rec.name}: ${res.error.message}`; } else imported++;
+      }
+    }
+    try { await logAudit('import', 'students', 'bulk', { imported, skipped_duplicates: skipped.length, failed }); } catch(e) {}
+    closeModal(); renderTabAsync();
+    openModal(`<h3>Import finished</h3>
+      <div class="bignote" style="margin-bottom:10px;"><strong>${imported}</strong> student(s) imported.${skipped.length ? `<br><strong>${skipped.length}</strong> skipped because they are already in the system or repeated in the file.` : ''}${failed ? `<br><strong style="color:var(--bad);">${failed}</strong> could not be saved (first problem: ${esc(firstErr)}).` : ''}</div>
+      ${skipped.length ? `<div class="desc">Skipped: ${skipped.slice(0, 15).map(r => esc(r.name)).join(', ')}${skipped.length > 15 ? ` and ${skipped.length - 15} more` : ''}.</div>` : ''}
+      <div class="mfoot"><button class="btn" onclick="closeModal()">Close</button></div>`);
+  } catch(e) {
+    toast('Import stopped: ' + e.message + (imported ? ` (${imported} were already saved - re-opening Import will skip them.)` : ''));
+    btn.disabled = false; btn.textContent = 'Try again';
+  } finally { IMPORTING = false; }
 }
 
 
@@ -1427,6 +1537,22 @@ async function fetchStaff(){
 }
 // ---------- CSV/Excel import ----------
 let STAFF_IMPORT_ROWS = [];
+let STAFF_IMPORTING = false, STAFF_EXISTING = [];
+const digitsOnly = v => String(v||'').replace(/\D/g,'');
+// same person if the name matches (any word order), or the same e-mail, or the same phone number
+function staffDupHit(list, p){
+  const k = nameKey(p.name), em = String(p.email||'').trim().toLowerCase(), ph = digitsOnly(p.phone);
+  return list.find(s => (k && nameKey(s.name) === k) || (em && String(s.email||'').trim().toLowerCase() === em) || (ph.length >= 7 && digitsOnly(s.phone) === ph)) || null;
+}
+function markStaffDupes(rows, existing){
+  const seen = [...(existing||[]).map(s => ({ name: s.name, email: s.email, phone: s.phone, label: `${s.staff_id || 'no ID'}` }))];
+  rows.forEach((r, i) => {
+    r.dup = ''; if (!r.valid) return;
+    const hit = staffDupHit(seen, r);
+    if (hit) r.dup = hit.row != null ? `Repeated in this file (row ${hit.row})` : `Already in the system: ${hit.name} (${hit.label})`;
+    if (!hit || r.force) seen.push({ name: r.name, email: r.email, phone: r.phone, row: i + 2 });
+  });
+}
 function openStaffImportModal(){
   STAFF_IMPORT_ROWS = [];
   openModal(`
@@ -1455,7 +1581,12 @@ function handleStaffImportFile(event){
   const file = event.target.files[0];
   if (!file) return;
   const ext = file.name.split('.').pop().toLowerCase();
-  const done = rows => { STAFF_IMPORT_ROWS = rows.map(normaliseStaffImportRow); renderStaffImportPreview(); };
+  const done = async rows => {
+    STAFF_IMPORT_ROWS = rows.map(normaliseStaffImportRow);
+    document.getElementById('staffImportPreviewArea').innerHTML = '<div class="desc">Checking the file against the staff already in the system…</div>';
+    try { STAFF_EXISTING = await fetchEveryRow('staff', 'id,name,staff_id,email,phone'); } catch(e) { STAFF_EXISTING = []; }
+    markStaffDupes(STAFF_IMPORT_ROWS, STAFF_EXISTING); renderStaffImportPreview();
+  };
   if (ext === 'csv') Papa.parse(file, { header: true, skipEmptyLines: true, complete: res => done(res.data) });
   else {
     const reader = new FileReader();
@@ -1463,16 +1594,21 @@ function handleStaffImportFile(event){
     reader.readAsBinaryString(file);
   }
 }
+function staffImportReady(r){ return r.valid && (!r.dup || r.force); }
+function toggleStaffForce(i, on){ STAFF_IMPORT_ROWS[i].force = !!on; markStaffDupes(STAFF_IMPORT_ROWS, STAFF_EXISTING); renderStaffImportPreview(); }
 function renderStaffImportPreview(){
-  const validCount = STAFF_IMPORT_ROWS.filter(r=>r.valid).length;
+  const ready = STAFF_IMPORT_ROWS.filter(staffImportReady).length, dups = STAFF_IMPORT_ROWS.filter(r => r.dup).length, bad = STAFF_IMPORT_ROWS.filter(r => !r.valid).length;
+  const order = STAFF_IMPORT_ROWS.map((r, i) => ({ r, i })).sort((x, y) => (y.r.dup ? 2 : !y.r.valid ? 1 : 0) - (x.r.dup ? 2 : !x.r.valid ? 1 : 0));
   document.getElementById('staffImportPreviewArea').innerHTML = `
-    <div class="desc">${STAFF_IMPORT_ROWS.length} row(s) read — <strong style="color:var(--ok);">${validCount} ready</strong>.</div>
-    <div class="tablewrap" style="max-height:240px;overflow-y:auto;"><table>
+    <div class="desc">${STAFF_IMPORT_ROWS.length} row(s) read — <strong style="color:var(--ok);">${ready} ready to import</strong>${dups ? ` · <strong style="color:var(--bad);">${dups} already in the system or repeated in the file (will be skipped)</strong>` : ''}${bad ? ` · ${bad} incomplete (no name)` : ''}.</div>
+    <div class="tablewrap" style="max-height:260px;overflow-y:auto;"><table>
       <tr><th>Name</th><th>Position</th><th>Department</th><th></th></tr>
-      ${STAFF_IMPORT_ROWS.slice(0,50).map(r=>`<tr><td>${esc(r.name)||'<em>missing</em>'}</td><td>${esc(r.role)}</td><td>${esc(r.department)}</td><td>${r.valid?'<span class="pill ok">Ready</span>':'<span class="pill bad">Skip</span>'}</td></tr>`).join('')}
+      ${order.slice(0, 80).map(({ r, i }) => `<tr><td>${esc(r.name)||'<em>missing</em>'}</td><td>${esc(r.role)}</td><td>${esc(r.department)}</td><td>${
+        r.dup ? `<span class="pill bad">Skip</span> <div style="font-size:11px;color:var(--grey);">${esc(r.dup)}</div><label style="font-size:11px;"><input type="checkbox" ${r.force?'checked':''} onchange="toggleStaffForce(${i},this.checked)"> Import anyway (a different person)</label>`
+        : r.valid ? '<span class="pill ok">Ready</span>' : '<span class="pill bad">Skip</span>'}</td></tr>`).join('')}
     </table></div>`;
   const btn = document.getElementById('staffImportConfirmBtn');
-  btn.disabled = validCount === 0; btn.textContent = `Import ${validCount} Staff`;
+  btn.disabled = ready === 0 || STAFF_IMPORTING; btn.textContent = `Import ${ready} Staff`;
 }
 
 
@@ -3091,6 +3227,12 @@ async function saveAdmission(existingId){
 async function enrolAdmission(id){
   const { data: r } = await sb.from('admissions').select('*').eq('id', id).maybeSingle();
   if (!r) return;
+  if (r.status === 'Enrolled') { toast(r.name + ' is already enrolled.'); return; }
+  try {
+    const all = await fetchEveryRow('students', 'id,name,class_id,dob,student_id');
+    const hit = studentDupHit(all, r.name, r.dob);
+    if (hit && !confirm(`A pupil with this name is already on file: ${hit.name} - ${hit.student_id || 'no ID'} - ${(classById(hit.class_id)||{}).name || hit.class_id}.\n\nPress OK only if this is a DIFFERENT child. Cancel stops the enrolment.`)) return;
+  } catch(e) {}
   if (!confirm(`Enrol ${r.name} as a new student in ${r.class_applied_for}?`)) return;
   const cls = CLASSES.find(c=>c.name===r.class_applied_for);
   try {
@@ -4098,7 +4240,7 @@ function renderWelcome(){
     <div class="wp-role">${esc(ROLE_LABELS[p.role] || p.role)}</div>
     <div class="row" style="margin-top:28px;justify-content:center;">
       <button class="btn" style="background:#C9982E;border-color:#C9982E;color:#2b2100;padding:12px 28px;font-size:15px;" onclick="closeWelcome()">Continue to Dashboard &rarr;</button>
-      ${p.photo_url ? '' : `<label class="btn secondary" style="background:transparent;border-color:rgba(255,255,255,.6);color:#fff;cursor:pointer;">Add my photo<input type="file" accept="image/*" style="display:none" onchange="uploadMyPhoto(this)"></label>`}
+      ${p.photo_url ? '' : `<label class="btn secondary" style="background:transparent;border-color:rgba(255,255,255,.6);color:#fff;cursor:pointer;">Add my photo<input type="file" accept="image/*" style="display:none" onchange="uploadMyPhoto(this)"></label> <label class="btn secondary" style="background:transparent;border-color:rgba(255,255,255,.6);color:#fff;cursor:pointer;">&#128247; Take photo<input type="file" accept="image/*" capture="user" style="display:none" onchange="uploadMyPhoto(this)"></label>`}
     </div>
     <div class="wp-foot">Breath of Excellence &middot; Sabon Gida, Kokona L.G.A., Nasarawa State</div>`;
   el.classList.remove('hidden');
@@ -5507,7 +5649,7 @@ async function openStaffForm(arg){
     <div class="row" style="align-items:flex-start;gap:14px;margin-bottom:6px;">
       <div><img id="st_photo_preview" src="${esc(s.photo_url || '')}" style="width:78px;height:90px;object-fit:cover;border-radius:6px;border:1px solid var(--line);background:var(--cream);display:${s.photo_url ? 'block' : 'none'};">
         <div id="st_photo_placeholder" style="width:78px;height:90px;border-radius:6px;border:1px dashed var(--line);display:${s.photo_url ? 'none' : 'flex'};align-items:center;justify-content:center;color:var(--grey);font-size:11px;">No photo</div></div>
-      <div style="flex:1;"><div class="field"><label>Passport photograph</label><input type="file" id="st_photo" accept="image/*" onchange="previewPhoto('st_photo','st_photo_preview','st_photo_placeholder')"></div></div>
+      <div style="flex:1;"><div class="field"><label>Passport photograph</label>${photoPickerHtml('st_photo','st_photo_preview','st_photo_placeholder')}</div></div>
     </div>
     ${h('Personal information')}
     <div class="fgrid">
@@ -5570,9 +5712,14 @@ async function saveStaff(existingId){
     gender: val('st_gender') || null, subjects_taught: val('st_subjects'), classes_assigned: [...document.querySelectorAll('.st_class_cb:checked')].map(e => e.value),
     phone: val('st_phone'), email: val('st_email'), date_joined: val('st_joined') || null, employment_type: val('st_emptype'), status: newStatus,
     contract_end_date: val('st_contract') || null, reports_to_staff_id: val('st_reports') || null };
-  const photo = document.getElementById('st_photo').files[0];
+  const photo = pickedPhoto('st_photo');
   btn.disabled = true; st.textContent = 'Saving…';
   try {
+    if (!existingId) {
+      const all = await fetchEveryRow('staff', 'id,name,staff_id,email,phone');
+      const hit = staffDupHit(all, { name, email: row.email, phone: row.phone });
+      if (hit && !confirm(`Someone matching this name, e-mail or phone is already on file:\n\n${hit.name} - ${hit.staff_id || 'no ID'}\n\nPress OK only if this is a DIFFERENT person. Press Cancel to stop (nothing is saved).`)) { btn.disabled = false; st.textContent = ''; return; }
+    }
     if (photo) { st.textContent = 'Uploading photo…'; row.photo_url = await uploadPhoto(photo, 'staff'); }
     let sid = existingId;
     if (existingId) { const r = await sb.from('staff').update(row).eq('id', existingId); if (r.error) throw r.error; }
@@ -5601,15 +5748,35 @@ async function saveStaff(existingId){
   }
 }
 async function confirmStaffImport(){
-  const rows = STAFF_IMPORT_ROWS.filter(r => r.valid); let n = 0;
-  for (const r of rows) {
-    const staffId = await nextStaffId();
-    const ins = await sb.from('staff').insert({ name: r.name, role: r.role, department: r.department, phone: r.phone, email: r.email, status: 'active', staff_id: staffId }).select('id').single();
-    if (ins.error) continue; n++;
-    if ((r.bank || r.account) && (hasPerm('edit_staff') || hasPerm('edit_salary'))) await sb.from('staff_bank').upsert({ staff_id: ins.data.id, bank_name: r.bank, account_number: r.account }, { onConflict: 'staff_id' });
-    if (r.salary != null && hasPerm('edit_salary')) await sb.from('staff_finance').upsert({ staff_id: ins.data.id, monthly_salary: r.salary, updated_by: MY_PROFILE?.name }, { onConflict: 'staff_id' });
-  }
-  closeModal(); toast(`Imported ${n} staff member(s).`); renderTabAsync();
+  if (STAFF_IMPORTING) return;      // a second click while the first import is running does nothing
+  STAFF_IMPORTING = true;
+  const btn = document.getElementById('staffImportConfirmBtn'), area = document.getElementById('staffImportPreviewArea');
+  btn.disabled = true; btn.textContent = 'Importing… please wait';
+  document.querySelectorAll('#modalBody button.secondary, #modalBody .closeX').forEach(b => { if (b.classList.contains('closeX') || /cancel/i.test(b.textContent)) b.disabled = true; });
+  let n = 0, failed = 0, firstErr = '';
+  try {
+    const existing = await fetchEveryRow('staff', 'id,name,staff_id,email,phone');   // look again right now
+    markStaffDupes(STAFF_IMPORT_ROWS, existing);
+    const rows = STAFF_IMPORT_ROWS.filter(staffImportReady), skipped = STAFF_IMPORT_ROWS.filter(r => r.valid && !staffImportReady(r));
+    for (const [i, r] of rows.entries()) {
+      area.innerHTML = `<div class="desc">Importing… ${i + 1} of ${rows.length}. Please do not close this window or click again.</div>`;
+      const staffId = await nextStaffId();
+      const ins = await sb.from('staff').insert({ name: r.name, role: r.role, department: r.department, phone: r.phone, email: r.email, status: 'active', staff_id: staffId }).select('id').single();
+      if (ins.error) { failed++; firstErr = firstErr || `${r.name}: ${ins.error.message}`; continue; }
+      n++;
+      if ((r.bank || r.account) && (hasPerm('edit_staff') || hasPerm('edit_salary'))) await sb.from('staff_bank').upsert({ staff_id: ins.data.id, bank_name: r.bank, account_number: r.account }, { onConflict: 'staff_id' });
+      if (r.salary != null && hasPerm('edit_salary')) await sb.from('staff_finance').upsert({ staff_id: ins.data.id, monthly_salary: r.salary, updated_by: MY_PROFILE?.name }, { onConflict: 'staff_id' });
+    }
+    try { await logAudit('import', 'staff', 'bulk', { imported: n, skipped_duplicates: skipped.length, failed }); } catch(e) {}
+    closeModal(); renderTabAsync();
+    openModal(`<h3>Import finished</h3>
+      <div class="bignote" style="margin-bottom:10px;"><strong>${n}</strong> staff member(s) imported.${skipped.length ? `<br><strong>${skipped.length}</strong> skipped because they are already in the system or repeated in the file.` : ''}${failed ? `<br><strong style="color:var(--bad);">${failed}</strong> could not be saved (first problem: ${esc(firstErr)}).` : ''}</div>
+      ${skipped.length ? `<div class="desc">Skipped: ${skipped.slice(0, 15).map(r => esc(r.name)).join(', ')}${skipped.length > 15 ? ` and ${skipped.length - 15} more` : ''}.</div>` : ''}
+      <div class="mfoot"><button class="btn" onclick="closeModal()">Close</button></div>`);
+  } catch(e) {
+    toast('Import stopped: ' + e.message + (n ? ` (${n} were already saved - re-opening Import will skip them.)` : ''));
+    btn.disabled = false; btn.textContent = 'Try again';
+  } finally { STAFF_IMPORTING = false; }
 }
 
 // =====================================================================
