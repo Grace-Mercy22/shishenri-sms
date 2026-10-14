@@ -404,7 +404,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r18'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r19'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -1869,7 +1869,7 @@ async function renderSettingsTab(){
         <td class="mono">${esc(staffById[p.staff_record_id]?.staff_id || '—')}</td>
         <td>${esc(ROLE_LABELS[p.role]||p.role)}</td>
         <td>${(p.classes_assigned||[]).map(c=>classById(c)?.name||c).join(', ')||'—'}</td>
-        <td class="right"><button class="iconbtn" onclick='openEditProfileRole(${JSON.stringify(p).replace(/'/g,"&apos;")})'>Edit</button>${(ACCESS_MODE === 'rbac' && hasPerm('assign_roles') && p.id !== MY_PROFILE?.id) ? ` <button class="iconbtn" data-n="${esc(loginName(p) || 'this login')}" onclick="openRemoveLogin('${p.id}', this.dataset.n)">Remove login</button>` : ''}</td>
+        <td class="right"><button class="iconbtn" onclick='openEditProfileRole(${JSON.stringify(p).replace(/'/g,"&apos;")})'>Edit</button>${(ACCESS_MODE === 'rbac' && hasPerm('assign_roles') && p.id !== MY_PROFILE?.id) ? ` <button class="iconbtn" data-n="${esc(loginName(p) || 'this login')}" onclick="openRemoveLogin('${p.id}', this.dataset.n)">Remove login</button>` : ''}${(ACCESS_MODE === 'rbac' && hasPerm('assign_roles') && p.id !== MY_PROFILE?.id) ? ` <button class="iconbtn" data-n="${esc(loginName(p) || 'this login')}" onclick="openSetPassword('${p.id}', this.dataset.n)">Set password</button>` : ''}</td>
       </tr>`).join('')}
     </table></div>
   </div>
@@ -2000,7 +2000,7 @@ async function saveProfileRole(profileId){
 function delHoldDays(){ const n = SETTINGS_CACHE && SETTINGS_CACHE.deletion_hold_days; return (typeof n === 'number') ? n : 30; }
 function delDue(rec){ return new Date(new Date(rec.delete_requested_at).getTime() + delHoldDays() * 86400000); }
 function delEligible(rec){ return !!rec.delete_requested_at && Date.now() >= delDue(rec).getTime(); }
-const delErr = e => /function .*(request_record_deletion|delete_marked_record|cancel_record_deletion|deletion_impact|remove_staff_login|set_deletion_hold_days)|schema cache/i.test((e && e.message) || '') ? 'This needs SQL file 24 to be installed first.' : ((e && e.message) || 'Something went wrong.');
+const delErr = e => /function .*(request_record_deletion|delete_marked_record|cancel_record_deletion|deletion_impact|remove_staff_login|set_deletion_hold_days|set_user_password)|schema cache/i.test((e && e.message) || '') ? (/set_user_password/i.test(e.message) ? 'This needs SQL file 28 to be installed first.' : 'This needs SQL file 24 to be installed first.') : ((e && e.message) || 'Something went wrong.');
 const dateOnly = v => String(v || '').slice(0, 10);
 function deleteButtonHtml(kind, rec){
   if (!rec || !('delete_requested_at' in rec) || rec.delete_requested_at) return '';
@@ -2129,6 +2129,34 @@ async function submitRemoveLogin(userId){
   const { data, error } = await sb.rpc('remove_staff_login', { p_user: userId, p_reason: reason });
   if (error) { btn.disabled = false; st.textContent = delErr(error); return; }
   closeModal(); toast('Login removed. The staff record is kept.'); renderTabAsync();
+}
+
+// ---- admin sets a new password for a login (SQL 28). The password is typed here, sent once over HTTPS to the database
+//      function, stored hashed, and never logged. The person is signed out everywhere. ----
+function genTempPassword(){
+  const a = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789', b = new Uint32Array(10); crypto.getRandomValues(b);
+  return Array.from(b, x => a[x % a.length]).join('') + '#' + (10 + (b[0] % 90));
+}
+function openSetPassword(userId, name){
+  openModal(`
+    <h3>Set a new password &mdash; ${esc(name)}</h3>
+    <div class="msub">This replaces their password straight away and <strong>signs them out of every device</strong>. Give them the new password privately (in person or by phone &mdash; not in a group chat), and ask them to change it with <strong>Change Password</strong> after signing in.</div>
+    <div class="field"><label>New password (at least 8 characters)</label>
+      <div style="display:flex;gap:8px;"><input id="sp_pw" type="text" autocomplete="off" style="flex:1;font-family:monospace;" placeholder="type one, or press Generate"><button class="btn small secondary" type="button" onclick="document.getElementById('sp_pw').value = genTempPassword()">Generate</button></div></div>
+    <div class="field"><label>Reason (required &mdash; kept in the audit log, the password is not)</label><input id="sp_reason" placeholder="e.g. Forgot password / new staff first login"></div>
+    <div id="spStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn maroon" id="spBtn" onclick="submitSetPassword('${userId}')">Set password</button></div>`);
+}
+async function submitSetPassword(userId){
+  const pw = document.getElementById('sp_pw').value, reason = (document.getElementById('sp_reason').value || '').trim();
+  const st = document.getElementById('spStatus'), btn = document.getElementById('spBtn');
+  if (pw.length < 8) { st.textContent = 'The password must be at least 8 characters.'; return; }
+  if (reason.length < 3) { st.textContent = 'A reason is required.'; return; }
+  btn.disabled = true; st.textContent = 'Saving…';
+  const { error } = await sb.rpc('set_user_password', { p_user: userId, p_new_password: pw, p_reason: reason });
+  if (error) { btn.disabled = false; st.textContent = delErr(error); return; }
+  document.getElementById('sp_pw').value = '';
+  closeModal(); toast('Password set. They have been signed out everywhere.'); 
 }
 
 // ---- dashboard search: only searches what the signed-in person is allowed to see (the database enforces it too) ----
