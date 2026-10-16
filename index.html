@@ -404,7 +404,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r20'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r23'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -1064,7 +1064,7 @@ async function dashBody(){
     const f = DASH.status;
     if (f === 'OUT') list = list.filter(x => isOut(x.r)); else if (f) list = list.filter(x => (x.r?.status || 'U') === f);
     const rows = list.map(({ s, r }) => `<tr class="dclick" data-s="${esc((s.name||'').toLowerCase())}" onclick="dashGoStaff('${s.id}')"><td><strong>${esc(s.name)}</strong><div style="font-size:11px;color:var(--grey);">${esc(s.role||'')}</div></td><td>${spill(r?.status)}</td><td class="mono">${clock5(r?.time_in)}</td><td class="mono">${clock5(r?.time_out)}</td>
-      <td onclick="event.stopPropagation()">${r?.check_in_at ? locBadge(r.check_in_within, r.check_in_distance_m) + ' ' + mapLink(r.check_in_lat, r.check_in_lng) : (r ? '<span class="pill muted">marked by Admin</span>' : '')}</td></tr>`).join('');
+      <td onclick="event.stopPropagation()">${r?.check_in_at ? locBadge(r.check_in_within, r.check_in_distance_m, r.check_in_accuracy) + ' ' + mapLink(r.check_in_lat, r.check_in_lng) : (r ? regPill(r) : '')}</td></tr>`).join('');
     const sel = `<select onchange="DASH.status=this.value;dashRefresh();">${[['','All'],['P','Present'],['L','Late'],['A','Absent'],['U','Not marked'],['OUT','Outside school']].map(([v,l]) => `<option value="${v}" ${DASH.status===v?'selected':''}>${l}</option>`).join('')}</select>`;
     return { title: `Staff attendance &mdash; ${fmtDate(d)}`, date: true, sub: `${list.length} person(s) shown`, controls: sel + dashSearchBox(), body: dtable(['Name','Status','Time in','Time out','Location'], rows, 'No staff match.'), go: ['staffAttendance','Open Staff Attendance'] };
   }
@@ -4245,9 +4245,10 @@ function fmtDate(d){
 function fmtTime(ts){
   return ts ? new Date(ts).toLocaleTimeString('en-GB', { timeZone:'Africa/Lagos', hour:'2-digit', minute:'2-digit' }) : '—';
 }
-function locBadge(within, dist){
-  if (within === true) return `<span class="pill ok">At school · ${Math.round(dist)} m</span>`;
-  if (within === false) return `<span class="pill bad">OUTSIDE school · ${Math.round(dist)} m</span>`;
+function locBadge(within, dist, acc){
+  const a = (acc != null && isFinite(acc)) ? ` <span style="font-weight:400;">(phone accuracy &plusmn;${Math.round(acc)} m)</span>` : '';
+  if (within === true) return `<span class="pill ok">At school &middot; ${Math.round(dist)} m${a}</span>`;
+  if (within === false) return `<span class="pill bad">OUTSIDE school &middot; ${Math.round(dist)} m${a}</span>`;
   return `<span class="pill muted">no school location set</span>`;
 }
 function mapLink(lat, lng){
@@ -4672,7 +4673,11 @@ function readMapLink(){
 //   Time Out: tap Close of Business (COB) -> the SERVER stamps the time -> Submit Time Out -> LOCKED
 // The locks are enforced by the database, not just by greying the buttons.
 // =====================================================================
-let staffAttState = { staffId: null };
+let staffAttState = { staffId: null, mode: 'one' };
+function regPill(r, withServerNote){
+  if (r && r.source === 'register') return `<span class="pill muted" title="Time entered by the person recording the register">entered on register &middot; ${esc((r.in_submitted_by||'').replace(' (register)','') || 'clerk')}</span>`;
+  return `<span class="pill muted">${withServerNote && r && r.in_marked_at ? 'marked by Admin (server time)' : 'marked by Admin'}</span>`;
+}
 let STAFF_CTX = { staffId: null, self: false };
 function statusWord(s){ return {P:'Present',A:'Absent',L:'Late',U:'Unmarked'}[s] || 'Unmarked'; }
 const clock5 = t => t ? String(t).slice(0,5) : '—';
@@ -4699,7 +4704,7 @@ function staffDayPanel(row, staffId, self){
   const inMarked = !!r.in_marked_at, inDone = !!r.in_submitted_at;
   const outMarked = !!r.out_marked_at, outDone = !!r.out_submitted_at;
   const modeBtn = (code, label) => `<button type="button" class="statusbtn sa-act ${(inMarked && status===code)?'on '+code:''}" ${inDone?'disabled':''} onclick="staffAct('markIn','${code}')">${label}</button>`;
-  const inLoc = r.check_in_at ? ' ' + locBadge(r.check_in_within, r.check_in_distance_m) + ' ' + mapLink(r.check_in_lat, r.check_in_lng) : '';
+  const inLoc = r.check_in_at ? ' ' + locBadge(r.check_in_within, r.check_in_distance_m, r.check_in_accuracy) + ' ' + mapLink(r.check_in_lat, r.check_in_lng) : '';
   const outLoc = r.check_out_at ? ' ' + locBadge(r.check_out_within, r.check_out_distance_m) + ' ' + mapLink(r.check_out_lat, r.check_out_lng) : '';
   const absent = inDone && status === 'A';
   const canCob = inDone && status !== 'A' && !outMarked && !outDone;
@@ -4711,7 +4716,7 @@ function staffDayPanel(row, staffId, self){
     <div class="field" style="max-width:420px;"><label>Reason (if late or absent)</label><input id="sa_reason" ${inDone?'disabled':''} value="${esc(r.reason||'')}"></div>
     <div class="row" style="gap:6px;margin-bottom:12px;">${modeBtn('P','Present')}${modeBtn('L','Late')}${modeBtn('A','Absent')}</div>
     <div style="margin-bottom:14px;font-size:14.5px;">${inMarked
-      ? `Marked <strong>${statusWord(status)}</strong> at <strong>${clock5(r.time_in)}</strong> <span class="desc" style="margin:0;">(server time)</span>${inLoc}`
+      ? `Marked <strong>${statusWord(status)}</strong> at <strong>${clock5(r.time_in)}</strong> <span class="desc" style="margin:0;">${r.source==='register' ? '(entered on the register by '+esc((r.in_submitted_by||'').replace(' (register)',''))+')' : '(server time)'}</span>${inLoc}`
       : '<span style="color:var(--grey);">Not marked yet.</span>'}</div>
     ${inDone
       ? `<button class="btn locked" disabled>&#10003; Time In Submitted &mdash; ${clock5(r.time_in)}</button>`
@@ -4723,7 +4728,7 @@ function staffDayPanel(row, staffId, self){
     <div class="desc">When you finish for the day, tap <strong>Close of Business (COB)</strong>. The server stamps the time, then press <strong>Submit Time Out</strong> &mdash; after that it is locked for the day.</div>
     <div class="row" style="margin-bottom:12px;"><button class="btn maroon sa-act" ${canCob?'':'disabled'} onclick="staffAct('markOut')">Close of Business (COB)</button></div>
     <div style="margin-bottom:14px;font-size:14.5px;">${outMarked
-      ? `Close of business at <strong>${clock5(r.time_out)}</strong> <span class="desc" style="margin:0;">(server time)</span>${outLoc}`
+      ? `Close of business at <strong>${clock5(r.time_out)}</strong> <span class="desc" style="margin:0;">${r.source==='register' ? '(entered on the register)' : '(server time)'}</span>${outLoc}`
       : `<span style="color:var(--grey);">${inDone ? 'Not marked yet.' : 'Submit your Time In first.'}</span>`}</div>
     ${outDone
       ? `<button class="btn locked" disabled>&#10003; Time Out Submitted &mdash; ${clock5(r.time_out)}</button>`
@@ -4791,7 +4796,7 @@ function staffHistoryRows(rows, opts){
     return `<tr>
     <td class="mono">${r.date}</td><td>${statusWord(r.status)}</td><td>${clock5(r.time_in)}</td><td>${clock5(r.time_out)}</td>
     <td>${esc(r.reason||'')}</td>
-    <td>${r.check_in_at ? locBadge(r.check_in_within, r.check_in_distance_m) + ' ' + mapLink(r.check_in_lat, r.check_in_lng) : `<span class="pill muted">${r.in_marked_at ? 'marked by Admin (server time)' : 'marked by Admin'}</span>`}</td>
+    <td>${r.check_in_at ? locBadge(r.check_in_within, r.check_in_distance_m, r.check_in_accuracy) + ' ' + mapLink(r.check_in_lat, r.check_in_lng) : regPill(r, true)}</td>
     <td>${inPill} ${outPill}</td>
     ${opts.admin ? `<td class="right">${canFix ? `<button class="iconbtn" onclick="openSetTimeOut('${r.staff_id}','${r.date}','${clock5(r.time_in)}')">Set Time Out</button>` : ''}</td>` : ''}
   </tr>`; }).join('');
@@ -4817,16 +4822,29 @@ async function saveSetTimeOut(staffId, date){
 
 // ---------- Admin screen: choose a staff member ----------
 async function renderStaffAttendance(){
-  const { data: staffList } = await sb.from('staff').select('*').order('name');
+  // Someone who may mark attendance for others but may NOT view staff details gets only names and staff IDs (SQL 30).
+  let staffList = null, listErr = null;
+  if (hasPerm('mark_staff_attendance') && !hasPerm('view_staff')) {
+    const r = await sb.rpc('staff_register_list');
+    if (r.error) listErr = r.error; else staffList = r.data || [];
+  }
+  if (!staffList && !listErr) { const r = await sb.from('staff').select('*').order('name'); staffList = r.data; }
+  if (listErr) return `<div class="panel"><div class="empty">${/staff_register_list|schema cache/i.test(listErr.message || '') ? 'The staff list needs SQL file 30 to be installed first.' : esc(listErr.message || 'Could not load the staff list.')}</div></div>`;
   const active = (staffList||[]).filter(isActiveStaff);
   if (!staffAttState.staffId && active.length) staffAttState.staffId = active[0].id;
   const staffMember = active.find(s => s.id === staffAttState.staffId);
   if (!staffMember) return `<div class="panel"><div class="empty">Add a staff member first (Staff tab).</div></div>`;
   await closeOpenStaffDays(true);
   const today = await serverToday();
+  const canRegister = hasPerm('mark_staff_attendance');
+  const modeBar = canRegister ? `<div class="panel" style="padding:10px 14px;"><div class="row" style="gap:8px;">
+      <button class="btn small ${staffAttState.mode==='one'?'':'secondary'}" onclick="staffAttState.mode='one';renderTabAsync();">One person</button>
+      <button class="btn small ${staffAttState.mode==='register'?'':'secondary'}" onclick="staffAttState.mode='register';renderTabAsync();">Register (everyone)</button>
+      <span class="desc" style="margin:0;">Staff can still mark their own attendance from <strong>My Attendance</strong>.</span></div></div>` : '';
+  if (canRegister && staffAttState.mode === 'register') return modeBar + await renderStaffRegister(active, today);
   const { data: row } = await sb.from('staff_attendance').select('*').eq('staff_id', staffMember.id).eq('date', today).maybeSingle();
   const { data: monthRows } = await sb.from('staff_attendance').select('*').eq('staff_id', staffMember.id).gte('date', today.slice(0,8) + '01').order('date', { ascending: false });
-  return `
+  return modeBar + `
   <div class="panel">
     <div class="row">
       <select onchange="staffAttState.staffId=this.value;renderTabAsync();">${active.map(s=>`<option value="${s.id}" ${staffAttState.staffId===s.id?'selected':''}>${esc(s.name)}</option>`).join('')}</select>
@@ -4841,6 +4859,80 @@ async function renderStaffAttendance(){
       ${staffHistoryRows(monthRows, { admin: true, today }) || '<tr><td colspan="8" style="text-align:center;color:var(--grey);">No entries yet this month.</td></tr>'}
     </table></div>
   </div>`;
+}
+
+// ---------- Register (everyone): one person records the day for many staff (SQL 29) ----------
+async function renderStaffRegister(active, today){
+  const { data: rows } = await sb.from('staff_attendance').select('*').eq('date', today);
+  const byId = {}; (rows || []).forEach(r => { byId[r.staff_id] = r; });
+  const me = MY_PROFILE?.staff_record_id;
+  const now = new Date().toLocaleTimeString('en-GB', { timeZone: 'Africa/Lagos', hour: '2-digit', minute: '2-digit' });
+  const body = active.map(s => {
+    const r = byId[s.id]; const nm = `<td><strong>${esc(s.name)}</strong><div class="desc" style="margin:0;">${esc(s.staff_id || '')}</div></td>`;
+    if (s.id === me) return `<tr data-rg="none">${nm}<td colspan="5" class="desc">This is you &mdash; use <strong>My Attendance</strong> (it records your location).</td></tr>`;
+    if (r && r.check_in_at) return `<tr data-rg="none">${nm}<td>${statusWord(r.status)}</td><td>${clock5(r.time_in)}</td><td>${clock5(r.time_out)}</td><td colspan="2">${locBadge(r.check_in_within, r.check_in_distance_m, r.check_in_accuracy)} <span class="desc" style="margin:0;">marked by the staff member</span></td></tr>`;
+    if (r && r.in_submitted_at) {
+      const canOut = r.status !== 'A' && !r.out_submitted_at;
+      return `<tr data-rg="${canOut ? 'out' : 'none'}" data-sid="${s.id}">${nm}<td>${statusWord(r.status)}${r.source==='register' ? ' <span class="pill muted">register</span>' : ''}</td><td>${clock5(r.time_in)}</td>
+        <td>${canOut ? `<input type="time" id="rg_to_${s.id}" style="width:110px;" max="${now}">` : clock5(r.time_out)}</td><td class="desc">${esc(r.reason || '')}</td>
+        <td class="desc">${canOut ? 'Time In saved &middot; add Time Out when they leave' : 'Complete'}</td></tr>`;
+    }
+    return `<tr data-rg="new" data-sid="${s.id}">${nm}
+      <td><select id="rg_st_${s.id}"><option value="">&mdash;</option><option value="P">Present</option><option value="L">Late</option><option value="A">Absent</option></select></td>
+      <td><input type="time" id="rg_ti_${s.id}" style="width:110px;" max="${now}"></td>
+      <td><input type="time" id="rg_to_${s.id}" style="width:110px;" max="${now}"></td>
+      <td><input id="rg_rs_${s.id}" placeholder="reason (if late/absent)" style="min-width:140px;"></td><td class="desc">Not recorded yet</td></tr>`;
+  }).join('');
+  return `<div class="panel">
+    <h2>Staff Register &mdash; ${new Date(today + 'T12:00:00').toLocaleDateString('en-NG', { weekday:'long', year:'numeric', month:'long', day:'numeric' })}</h2>
+    <div class="desc">For staff who cannot mark themselves. Choose Present, Late or Absent and type the <strong>actual arrival time</strong> (Time Out is optional and can be added later today). Present after the resumption time is saved as Late. <strong>What you save is locked</strong> and is recorded in the Audit Log with your name. Anyone who marked themselves is not changed.</div>
+    <div class="row" style="gap:8px;margin-bottom:10px;">
+      <span class="desc" style="margin:0;">Quick fill: every empty row &rarr; Present at</span>
+      <input type="time" id="rg_fill_time" style="width:110px;" max="${now}"><button class="btn small secondary" onclick="rgFill()">Fill</button>
+    </div>
+    <div class="tablewrap"><table>
+      <tr><th>Staff</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Reason</th><th></th></tr>
+      ${body || '<tr><td colspan="6" style="text-align:center;color:var(--grey);">No staff yet.</td></tr>'}
+    </table></div>
+    <div id="rgStatus" class="desc" style="margin-top:8px;"></div>
+    <button class="btn" id="rgSaveBtn" style="margin-top:8px;" onclick="rgSave()">Save register</button>
+  </div>`;
+}
+function rgFill(){
+  const t = document.getElementById('rg_fill_time').value; if (!t) { toast('Type the arrival time first.'); return; }
+  document.querySelectorAll('tr[data-rg="new"]').forEach(tr => {
+    const id = tr.dataset.sid, st = document.getElementById('rg_st_' + id), ti = document.getElementById('rg_ti_' + id);
+    if (!st.value && !ti.value) { st.value = 'P'; ti.value = t; }
+  });
+}
+async function rgSave(){
+  const st = document.getElementById('rgStatus'), btn = document.getElementById('rgSaveBtn');
+  const entries = [], problems = [];
+  document.querySelectorAll('tr[data-rg="new"]').forEach(tr => {
+    const id = tr.dataset.sid, name = tr.querySelector('strong').textContent;
+    const status = document.getElementById('rg_st_' + id).value, ti = document.getElementById('rg_ti_' + id).value, to = document.getElementById('rg_to_' + id).value;
+    const reason = document.getElementById('rg_rs_' + id).value.trim();
+    if (!status && !ti && !to) return;
+    if (!status) { problems.push(name + ': choose Present, Late or Absent.'); return; }
+    if (status !== 'A' && !ti) { problems.push(name + ': enter the Time In.'); return; }
+    if (to && ti && to < ti) { problems.push(name + ': Time Out is earlier than Time In.'); return; }
+    entries.push({ staff: id, status, time_in: status === 'A' ? null : ti, time_out: status === 'A' ? null : (to || null), reason: reason || null });
+  });
+  document.querySelectorAll('tr[data-rg="out"]').forEach(tr => {
+    const id = tr.dataset.sid, to = document.getElementById('rg_to_' + id)?.value;
+    if (to) entries.push({ staff: id, time_out: to });
+  });
+  if (problems.length) { st.style.color = 'var(--bad)'; st.innerHTML = problems.map(esc).join('<br>'); return; }
+  if (!entries.length) { st.style.color = ''; st.textContent = 'Nothing to save yet.'; return; }
+  if (!confirm(`Save ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}?\n\nWhat you save is locked for today and recorded in the Audit Log with your name.`)) return;
+  btn.disabled = true; st.style.color = ''; st.textContent = 'Saving…';
+  const { data, error } = await sb.rpc('staff_register_save', { p_entries: entries });
+  btn.disabled = false;
+  if (error) { st.style.color = 'var(--bad)'; st.textContent = /staff_register_save|schema cache/i.test(error.message) ? 'This needs SQL file 29 to be installed first.' : error.message; return; }
+  const bad = (data.results || []).filter(x => !x.ok);
+  toast(`Saved ${data.saved}.` + (bad.length ? ` ${bad.length} not saved — see the list.` : ''));
+  await renderTabAsync();
+  if (bad.length) { const s2 = document.getElementById('rgStatus'); if (s2) { s2.style.color = 'var(--bad)'; s2.innerHTML = '<strong>Not saved:</strong><br>' + bad.map(x => esc((x.name || 'Unknown') + ': ' + x.message)).join('<br>'); } }
 }
 
 // ---------- Staff screen: mark myself (location required) ----------
