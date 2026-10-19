@@ -404,7 +404,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r23'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r24'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -4102,7 +4102,7 @@ async function renderSalary(){
     </div>${canEditFin ? `<button class="btn small secondary" onclick="openStaffForm('${staffMember.id}')">Edit financial details</button>` : ''}</div></div>` : '';
   let history = [];
   if (staffMember) {
-    const { data } = await sb.from('salary_payments').select('*').eq('staff_id', staffMember.id).order('year',{ascending:false}).order('month',{ascending:false});
+    const { data } = await sb.from('salary_payments').select('*').eq('staff_id', staffMember.id).order('year',{ascending:false}).order('month',{ascending:false}).order('date_paid',{ascending:false,nullsFirst:false}).order('created_at',{ascending:false});
     history = data || [];
   }
 
@@ -4115,12 +4115,12 @@ async function renderSalary(){
     ${finCard}
     ${!staffMember ? `<div class="empty">Add a staff member first.</div>` : `
     <div class="tablewrap"><table>
-      <tr><th>Month</th><th>Year</th><th class="right">Amount</th><th>Account No.</th><th>Bank</th><th>Date Paid</th><th></th></tr>
+      <tr><th>Month</th><th>Year</th><th class="right">Amount</th><th>Account No.</th><th>Bank</th><th>Date Paid</th><th>Notes</th><th></th></tr>
       ${history.map(h => `<tr>
         <td>${MONTH_NAMES[h.month-1]}</td><td>${h.year}</td><td class="right mono">${naira(h.amount)}</td>
-        <td class="mono">${esc(h.account_number||'—')}</td><td>${esc(h.bank_name||'—')}</td><td class="mono">${h.date_paid||'—'}</td>
+        <td class="mono">${esc(h.account_number||'—')}</td><td>${esc(h.bank_name||'—')}</td><td class="mono">${h.date_paid||'—'}</td><td>${esc(h.notes||'')}</td>
         <td class="right"><button class="iconbtn" onclick='openSalaryPaymentForm(${JSON.stringify(h).replace(/'/g,"&apos;")})'>Edit</button></td>
-      </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--grey);">No salary records yet for this staff member.</td></tr>'}
+      </tr>`).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--grey);">No salary records yet for this staff member.</td></tr>'}
     </table></div>`}
   </div>
   <div class="panel">
@@ -4148,6 +4148,7 @@ async function openSalaryPaymentForm(existing){
   const r = Object.assign({ amount: stf?.monthly_salary ?? '', account_number: stf?.account_number || '', bank_name: stf?.bank_name || '' }, existing || {}); // defaults come from the staff record
   openModal(`
     <h3>${existing?'Edit':'Record'} Salary Payment</h3>
+    ${existing ? '' : '<div class="msub">Each payment you save is kept as its own entry, even if this staff member already has one this month or on the same date.</div>'}
     <div class="fgrid">
       <div class="field"><label>Month *</label><select id="sal_pay_month">${MONTH_NAMES.map((m,i)=>`<option value="${i+1}" ${(r.month||new Date().getMonth()+1)===i+1?'selected':''}>${m}</option>`).join('')}</select></div>
       <div class="field"><label>Year *</label><input id="sal_pay_year" type="number" value="${r.year||new Date().getFullYear()}"></div>
@@ -4187,11 +4188,16 @@ async function saveSalaryPayment(existingId){
   try {
     let res;
     if (existingId) res = await sb.from('salary_payments').update(data).eq('id', existingId);
-    else res = await sb.from('salary_payments').upsert(data, { onConflict: 'staff_id,month,year' });
+    else res = await sb.from('salary_payments').insert(data);   // always a NEW row: every payment is kept, even for the same month or date
     if (res.error) throw res.error;
     await logAudit(existingId?'update':'create', 'salary_payments', salaryState.staffId, { month: data.month, year: data.year, amount });
     closeModal(); toast('Salary payment saved.'); renderTabAsync();
-  } catch(e) { btn.disabled = false; statusEl.textContent = 'Could not save: ' + e.message; }
+  } catch(e) {
+    btn.disabled = false;
+    statusEl.textContent = /duplicate key|salary_payments_staff_id_month_year/i.test(e.message || '')
+      ? 'Not saved: this month already has a payment and the database still allows only one per month. Run SQL file 32 first (it lets every payment be kept), then save again. Nothing was overwritten.'
+      : 'Could not save: ' + e.message;
+  }
 }
 async function generateSalaryReport(format){
   const scope = document.getElementById('sal_scope').value;
@@ -4210,7 +4216,7 @@ async function generateSalaryReport(format){
   const rows = (payments||[]).map(p => ({
     name: staffById[p.staff_id]?.name || '—', staffId: staffById[p.staff_id]?.staff_id || '',
     month: MONTH_NAMES[p.month-1], year: p.year, amount: p.amount, account: p.account_number||'', bank: p.bank_name||'', datePaid: p.date_paid||'',
-  })).sort((a,b)=>a.name.localeCompare(b.name));
+  })).sort((a,b)=>a.name.localeCompare(b.name) || String(a.datePaid).localeCompare(String(b.datePaid)));
   const total = rows.reduce((a,r)=>a+Number(r.amount),0);
   const periodLabel = (month?MONTH_NAMES[month-1]+' ':'') + year;
 
@@ -4223,14 +4229,14 @@ async function generateSalaryReport(format){
   }
   const bodyRows = rows.map(r=>`<tr>
     <td style="border:1px solid #ccc;padding:5px;">${esc(r.name)}</td><td style="border:1px solid #ccc;padding:5px;">${esc(r.staffId)}</td>
-    <td style="border:1px solid #ccc;padding:5px;">${esc(r.month)}</td><td style="border:1px solid #ccc;padding:5px;text-align:right;">${naira(r.amount)}</td>
+    <td style="border:1px solid #ccc;padding:5px;">${esc(r.month)} ${r.year}</td><td style="border:1px solid #ccc;padding:5px;">${esc(r.datePaid)}</td><td style="border:1px solid #ccc;padding:5px;text-align:right;">${naira(r.amount)}</td>
     <td style="border:1px solid #ccc;padding:5px;">${esc(r.account)}</td><td style="border:1px solid #ccc;padding:5px;">${esc(r.bank)}</td>
   </tr>`).join('');
   printHTML(`
     <table style="width:100%;border-collapse:collapse;font-size:12px;font-family:Inter,sans-serif;">
-      <tr style="background:#16345E;color:#fff;"><th style="padding:5px;text-align:left;">Name</th><th style="padding:5px;">Staff ID</th><th style="padding:5px;">Month</th><th style="padding:5px;">Amount</th><th style="padding:5px;">Account</th><th style="padding:5px;">Bank</th></tr>
-      ${bodyRows || '<tr><td colspan="6" style="text-align:center;padding:10px;border:1px solid #ccc;">No payments recorded for this period.</td></tr>'}
-      <tr style="font-weight:700;"><td colspan="3" style="border:1px solid #ccc;padding:5px;">TOTAL</td><td style="border:1px solid #ccc;padding:5px;text-align:right;">${naira(total)}</td><td colspan="2" style="border:1px solid #ccc;"></td></tr>
+      <tr style="background:#16345E;color:#fff;"><th style="padding:5px;text-align:left;">Name</th><th style="padding:5px;">Staff ID</th><th style="padding:5px;">Month</th><th style="padding:5px;">Date Paid</th><th style="padding:5px;">Amount</th><th style="padding:5px;">Account</th><th style="padding:5px;">Bank</th></tr>
+      ${bodyRows || '<tr><td colspan="7" style="text-align:center;padding:10px;border:1px solid #ccc;">No payments recorded for this period.</td></tr>'}
+      <tr style="font-weight:700;"><td colspan="4" style="border:1px solid #ccc;padding:5px;">TOTAL</td><td style="border:1px solid #ccc;padding:5px;text-align:right;">${naira(total)}</td><td colspan="2" style="border:1px solid #ccc;"></td></tr>
     </table>`, `Salary Report — ${periodLabel}`);
 }
 
