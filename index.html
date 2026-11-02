@@ -359,7 +359,7 @@ select.termsel { width: auto; }
       <button class="btn small ghost" style="width:100%;justify-content:center;margin-top:6px;" onclick="openChangePassword()">Change Password</button>
     </div>
     <div id="navList"></div>
-    <div class="foot">Private to ShiShenri Schools.<br>Hosted on your own Supabase + Vercel — no subscription, fully yours.</div>
+    <div class="foot">Private to ShiShenri Schools.<br>Hosted on your own Supabase + Vercel — no subscription, fully yours.<div style="margin-top:8px;opacity:.6;font-size:10.5px;">Built by Nggonri Technologies</div></div>
   </nav>
 
   <div id="mainWrap">
@@ -404,7 +404,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r24'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r27'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -489,7 +489,7 @@ function toast(msg){
   const el = document.getElementById('toast');
   el.textContent = msg; el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+  toastTimer = setTimeout(() => el.classList.remove('show'), Math.min(15000, Math.max(3200, String(msg).length * 60)));  // long messages stay long enough to read
 }
 function openModal(html, wide){
   document.getElementById('modalBody').className = 'modal' + (wide ? ' wide' : '');
@@ -1650,7 +1650,7 @@ async function renderAttendance(){
   ATT_ROWS = {};
   (attRows||[]).forEach(r => { ATT_ROWS[r.student_id] = r; });
 
-  const markedCount = ATT_ROSTER.filter(s => ATT_ROWS[s.id]).length;
+  const markedCount = ATT_ROSTER.filter(s => ATT_ROWS[s.id] && ATT_ROWS[s.id].status).length;
   const complete = ATT_ROSTER.length > 0 && markedCount === ATT_ROSTER.length;
   const submission = (attRows||[]).find(r => r.submitted_at);
   ATT_LOCKED = !!submission;
@@ -1729,7 +1729,7 @@ async function updateAttField(studentId, field, value){
   } catch(e) { toast('Could not save: ' + e.message); }
 }
 function updateAttMarkedCount(){
-  const markedCount = ATT_ROSTER.filter(s => ATT_ROWS[s.id]).length;
+  const markedCount = ATT_ROSTER.filter(s => ATT_ROWS[s.id] && ATT_ROWS[s.id].status).length;
   const el = document.getElementById('attMarkedCount');
   if (el) el.textContent = `${markedCount}/${ATT_ROSTER.length}`;
   const btn = document.getElementById('attSubmitBtn');
@@ -1741,6 +1741,11 @@ function updateAttMarkedCount(){
 }
 async function submitAttendance(){
   if (ATT_LOCKED) { toast('This register has already been submitted.'); return; }
+  const missing = ATT_ROSTER.filter(s => !(ATT_ROWS[s.id] && ATT_ROWS[s.id].status));
+  if (ATT_ROSTER.length === 0 || missing.length) {
+    toast('Not submitted. Still unmarked: ' + missing.map(s => s.name).join(', ') + '. Mark every pupil Present, Absent or Late first.');
+    updateAttMarkedCount(); return;
+  }
   if (!confirm('Submit this register?\n\nOnce submitted it is locked and cannot be changed today.')) return;
   const now = new Date().toISOString();
   const who = MY_PROFILE?.name || 'Unknown';
@@ -1807,6 +1812,25 @@ async function saveAbsenceFollowup(studentId){
 // from day one instead of waiting for it to break first.
 // =====================================================================
 let SETTINGS_CACHE = null;
+// Saves to the one settings row AND checks that a row really changed. Without this check the database can answer
+// "OK" while changing nothing (for example when this login is not allowed to change settings), which looked like
+// the values "going back to the default".
+async function updateSettingsRow(payload){
+  const { data, error } = await sb.from('settings').update(payload).eq('id', 1).select();
+  if (error) throw error;
+  if (!data || !data.length) throw new Error('The database did not accept the change. This login is probably not allowed to change settings (it needs the "School settings" permission), or the settings row is missing. Nothing was saved.');
+  // confirm the stored values are what was sent
+  const row = data[0], diffs = [];
+  Object.keys(payload).forEach(k => {
+    const a = payload[k], b = row[k];
+    if (k === 'subjects' || (a && typeof a === 'object')) return;
+    if (a == null || a === '') { if (b != null && b !== '') diffs.push(k); return; }
+    const same = typeof a === 'number' ? Number(b) === a : (b != null && String(b).startsWith(String(a)));   // '08:30' matches '08:30:00'
+    if (!same) diffs.push(k);
+  });
+  if (diffs.length) throw new Error('The database stored different values for: ' + diffs.join(', ') + ' than the ones you entered. Please tell your developer.');
+  return row;
+}
 async function loadSettings(){
   const { data, error } = await sb.from('settings').select('*').eq('id', 1).maybeSingle();
   if (error) { toast('Could not load settings: ' + error.message); SETTINGS_CACHE = { current_term:'', subjects:{} }; return SETTINGS_CACHE; }
@@ -2226,7 +2250,7 @@ function ensureSubjectsInitialised(){
 }
 async function persistSubjects(){
   try {
-    const { error } = await sb.from('settings').update({ subjects: SETTINGS_CACHE.subjects }).eq('id', 1);
+    let error = null; try { await updateSettingsRow({ subjects: SETTINGS_CACHE.subjects }); } catch(e) { error = e; }
     if (error) throw error;
   } catch(e){ toast('Could not save subjects: ' + e.message); }
 }
@@ -2268,8 +2292,7 @@ async function saveTerm(){
   if (document.getElementById('set_termstart')) payload.term_start_date = document.getElementById('set_termstart').value || null;
   if (termNumber === 3) payload.third_term_label = val; // remembered so next session's promotion knows which results to use
   try {
-    const { error } = await sb.from('settings').update(payload).eq('id', 1);
-    if (error) throw error;
+    await updateSettingsRow(payload);
     Object.assign(SETTINGS_CACHE, payload);
     await logAudit('update', 'settings', 'term', payload);
     toast('Term updated.');
@@ -4557,6 +4580,11 @@ async function reissueIdCard(type, id){
 // =====================================================================
 // SETTINGS PANELS — school location, attendance rules, verification address
 // =====================================================================
+document.addEventListener('input', e => {
+  if (e.target && ['set_lat','set_lng','set_radius','set_start','set_appurl'].includes(e.target.id)) {
+    const n = document.getElementById('setDirtyNote'); if (n) { n.style.color = 'var(--warn)'; n.innerHTML = '<strong>Not saved yet</strong> &mdash; press Save.'; }
+  }
+});
 function renderSchoolSettingsPanels(){
   const s = SETTINGS_CACHE;
   return `
@@ -4570,6 +4598,10 @@ function renderSchoolSettingsPanels(){
     <div class="fgrid">
       <div class="field"><label>Allowed distance from school (metres)</label><input id="set_radius" type="number" value="${s.geofence_m ?? 150}"></div>
       <div class="field"><label>Staff resumption time (later than this = Late)</label><input id="set_start" type="time" value="${(s.staff_start_time||'08:00').slice(0,5)}"></div>
+    </div>
+    <div class="row" style="margin:-2px 0 14px;gap:10px;align-items:center;">
+      <button class="btn small" onclick="saveSchoolSettings()">Save distance, time &amp; location</button>
+      <span id="setDirtyNote" class="desc" style="margin:0;">Change a figure, then press <strong>Save</strong>. Nothing is saved until you do.</span>
     </div>
     <div class="bignote" style="margin:4px 0 12px;">
       <strong>Option 1 &mdash; paste a Google Maps link or coordinates</strong> (you do not need to be at the school)
@@ -4616,11 +4648,11 @@ async function saveSchoolSettings(){
   };
   if ((payload.school_lat != null && isNaN(payload.school_lat)) || (payload.school_lng != null && isNaN(payload.school_lng))) { toast('Latitude and longitude must be numbers.'); return; }
   try {
-    const { error } = await sb.from('settings').update(payload).eq('id', 1);
-    if (error) throw error;
-    Object.assign(SETTINGS_CACHE, payload);
+    const row = await updateSettingsRow(payload);
+    Object.assign(SETTINGS_CACHE, row, { subjects: SETTINGS_CACHE.subjects });
     await logAudit('update', 'settings', 'school_location', payload);
-    toast('Saved.');
+    toast(`Saved. Distance ${row.geofence_m} m, resumption ${String(row.staff_start_time || '').slice(0,5)}.`);
+    renderTabAsync();   // show what the database really holds now
   } catch(e) { toast('Could not save: ' + e.message); }
 }
 
