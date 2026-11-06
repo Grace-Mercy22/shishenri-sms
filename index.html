@@ -18,6 +18,7 @@
 :root {
   --navy: #16345E;
   --navy-light: #24487d;
+  --navy-text: #16345E;
   --maroon: #7A1F2B;
   --maroon-light: #9c2a39;
   --gold: #C9982E;
@@ -37,10 +38,10 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #14171C; --card: #1D2128; --ink: #EDEBE4; --line: #333844; --grey: #A9A9A9; --cream: #23201A;
+    --bg: #14171C; --card: #1D2128; --ink: #EDEBE4; --line: #333844; --grey: #A9A9A9; --cream: #23201A; --navy-text: #A9C8F5; --ok: #6FCF8A; --bad: #F29A9A; --warn: #F2A877;
   }
 }
-:root[data-theme="dark"] { --bg: #14171C; --card: #1D2128; --ink: #EDEBE4; --line: #333844; --grey: #A9A9A9; --cream: #23201A; }
+:root[data-theme="dark"] { --bg: #14171C; --card: #1D2128; --ink: #EDEBE4; --line: #333844; --grey: #A9A9A9; --cream: #23201A; --navy-text: #A9C8F5; --ok: #6FCF8A; --bad: #F29A9A; --warn: #F2A877; --maroon-text: #F0A9B3; }
 * { box-sizing: border-box; }
 html { scroll-padding-top: env(safe-area-inset-top, 0px); }
 body {
@@ -66,13 +67,16 @@ input, select, textarea { font-family: inherit; }
 #sidebar .brand .tag { font-size: 11px; color: var(--gold); font-style: italic; margin-top: 3px; }
 .navbtn {
   display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
-  padding: 11px 20px; background: none; border: none; color: rgba(255,255,255,.78);
+  padding: 11px 20px; background: none; border: none; color: rgba(255,255,255,.92);
   font-size: 14.5px; font-weight: 500; border-left: 3px solid transparent;
 }
 .navbtn .ic { width: 18px; text-align: center; font-size: 15px; }
 .navbtn:hover { background: rgba(255,255,255,.06); color: #fff; }
 .navbtn.active { background: rgba(255,255,255,.1); color: #fff; border-left-color: var(--gold); }
-#sidebar .foot { margin-top: auto; padding: 14px 20px 4px; font-size: 11px; color: rgba(255,255,255,.4); }
+#sidebar .foot { margin-top: auto; padding: 14px 20px 4px; font-size: 11.5px; color: rgba(255,255,255,.85); }
+/* Buttons inside the navy sidebar: solid white pill with navy text so they are always readable */
+#sidebar .btn.ghost, #sidebar .identityBox .btn { background: #fff; color: var(--navy); border: 1px solid #fff; font-weight: 700; }
+#sidebar .btn.ghost:hover, #sidebar .identityBox .btn:hover { background: var(--gold); border-color: var(--gold); color: #16345E; }
 #mainWrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #topbar {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -81,13 +85,17 @@ input, select, textarea { font-family: inherit; }
 }
 #topbar .title { font-family: 'Source Serif 4', serif; font-weight: 700; font-size: 20px; }
 #topbar .sub { font-size: 12.5px; color: var(--grey); margin-top: 2px; }
-#hamburger { display: none; background: none; border: none; font-size: 20px; color: var(--navy); padding: 4px 8px; }
+#hamburger { display: none; background: none; border: none; font-size: 20px; color: var(--navy-text); padding: 4px 8px; }
 #syncPill { font-size: 11.5px; padding: 4px 10px; border-radius: 20px; display: flex; align-items: center; gap: 6px; }
 #syncPill .dot { width: 7px; height: 7px; border-radius: 50%; }
-#syncPill.live { background: #E7F3EA; color: var(--ok); } #syncPill.live .dot { background: var(--ok); }
-#syncPill.local { background: #FBF0E4; color: var(--warn); } #syncPill.local .dot { background: var(--warn); }
-:root[data-theme="dark"] #syncPill.live, :root:not([data-theme="light"]) #syncPill.live { background: rgba(46,125,69,.18); }
-:root[data-theme="dark"] #syncPill.local, :root:not([data-theme="light"]) #syncPill.local { background: rgba(180,83,31,.18); }
+#syncPill.live { background: #E7F3EA; color: #174D28; } #syncPill.live .dot { background: var(--ok); }
+#syncPill.local { background: #FBF0E4; color: #8F3F12; } #syncPill.local .dot { background: var(--warn); }
+:root[data-theme="dark"] #syncPill.live { background: rgba(46,125,69,.18); color: #8EE0A6; }
+:root[data-theme="dark"] #syncPill.local { background: rgba(180,83,31,.18); color: #F2B48C; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) #syncPill.live { background: rgba(46,125,69,.18); color: #8EE0A6; }
+  :root:not([data-theme="light"]) #syncPill.local { background: rgba(180,83,31,.18); color: #F2B48C; }
+}
 #content { flex: 1; padding: 20px 24px 60px; max-width: 1180px; width: 100%; margin: 0 auto; }
 
 /* ---------- Cards / KPIs ---------- */
@@ -98,19 +106,19 @@ input, select, textarea { font-family: inherit; }
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 22px; }
 .kpi { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 15px 16px; }
 .kpi .label { font-size: 12px; color: var(--grey); margin-bottom: 6px; }
-.kpi .value { font-family: 'Source Serif 4', serif; font-size: 25px; font-weight: 700; color: var(--navy); }
+.kpi .value { font-family: 'Source Serif 4', serif; font-size: 25px; font-weight: 700; color: var(--navy-text); }
 .kpi .value.maroon { color: var(--maroon); }
 .kpi .value.gold { color: #8a6d1f; }
 .kpi .note { font-size: 11.5px; color: var(--grey); margin-top: 4px; }
 .kpi.clickable { cursor: pointer; transition: box-shadow .15s, border-color .15s, transform .1s; position: relative; }
-.kpi.clickable:hover { border-color: var(--navy); box-shadow: 0 3px 12px rgba(22,52,94,.14); transform: translateY(-1px); }
-.kpi.clickable::after { content: 'View details \203A'; position: absolute; right: 12px; bottom: 9px; font-size: 10.5px; color: var(--navy); opacity: 0; transition: opacity .15s; }
+.kpi.clickable:hover { border-color: var(--navy-text); box-shadow: 0 3px 12px rgba(22,52,94,.14); transform: translateY(-1px); }
+.kpi.clickable::after { content: 'View details \203A'; position: absolute; right: 12px; bottom: 9px; font-size: 10.5px; color: var(--navy-text); opacity: 0; transition: opacity .15s; }
 .kpi.clickable:hover::after { opacity: .85; }
 tr.dclick { cursor: pointer; } tr.dclick:hover td { background: var(--cream); }
-.linkbtn { background: none; border: none; color: var(--navy); text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }
+.linkbtn { background: none; border: none; color: var(--navy-text); text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }
 
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; }
-.panel > h2 { margin: 0 0 4px; font-size: 17px; color: var(--navy); }
+.panel > h2 { margin: 0 0 4px; font-size: 17px; color: var(--navy-text); }
 .panel > .desc { font-size: 12.5px; color: var(--grey); margin-bottom: 14px; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .row.between { justify-content: space-between; }
@@ -121,7 +129,7 @@ tr.dclick { cursor: pointer; } tr.dclick:hover td { background: var(--cream); }
   border: 1px solid var(--navy); background: var(--navy); color: #fff; font-size: 13.5px; font-weight: 600;
 }
 .btn:hover { background: var(--navy-light); }
-.btn.secondary { background: transparent; color: var(--navy); }
+.btn.secondary { background: transparent; color: var(--navy-text); }
 .btn.secondary:hover { background: var(--cream); }
 .btn.maroon { background: var(--maroon); border-color: var(--maroon); }
 .btn.maroon:hover { background: var(--maroon-light); }
@@ -141,9 +149,9 @@ td.clickable { cursor: pointer; }
 td.clickable:hover { background: var(--cream); }
 .tablewrap { overflow-x: auto; }
 .pill { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 600; }
-.pill.ok { background: #E7F3EA; color: var(--ok); }
+.pill.ok { background: #E7F3EA; color: #1F5E32; }
 .pill.bad { background: #FBE7E7; color: var(--bad); }
-.pill.warn { background: #FBF0E4; color: var(--warn); }
+.pill.warn { background: #FBF0E4; color: #8F3F12; }
 .pill.muted { background: var(--cream); color: var(--grey); }
 
 /* ---------- Forms ---------- */
@@ -167,7 +175,7 @@ td.clickable:hover { background: var(--cream); }
 .overlay.show { display: flex; }
 .modal { background: var(--card); border-radius: 14px; width: 100%; max-width: 560px; padding: 22px 24px 24px; margin-top: 20px; }
 .modal.wide { max-width: 760px; }
-.modal h3 { margin: 0 0 3px; font-size: 18px; color: var(--navy); }
+.modal h3 { margin: 0 0 3px; font-size: 18px; color: var(--navy-text); }
 .modal .msub { font-size: 12.5px; color: var(--grey); margin-bottom: 16px; }
 .modal .mfoot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; }
 .closeX { position: absolute; top: 16px; right: 18px; background: none; border: none; font-size: 20px; color: var(--grey); }
@@ -176,7 +184,7 @@ td.clickable:hover { background: var(--cream); }
 /* ---------- Tabs (detail views) ---------- */
 .tabbar { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; flex-wrap: wrap; }
 .tabbtn { padding: 9px 14px; background: none; border: none; font-size: 13.5px; font-weight: 600; color: var(--grey); border-bottom: 2px solid transparent; margin-bottom: -1px; }
-.tabbtn.active { color: var(--navy); border-bottom-color: var(--navy); }
+.tabbtn.active { color: var(--navy-text); border-bottom-color: var(--navy-text); }
 
 /* ---------- Misc ---------- */
 .empty { text-align: center; padding: 40px 20px; color: var(--grey); font-size: 14px; }
@@ -195,7 +203,7 @@ td.clickable:hover { background: var(--cream); }
 .searchbox input { padding-left: 30px; }
 .searchbox .sic { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--grey); font-size: 13px; }
 .bignote { background: var(--cream); border: 1px dashed var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px; color: var(--grey); line-height: 1.5; }
-.linklike { background: none; border: none; color: var(--navy); font-weight: 600; font-size: 13px; padding: 0; text-decoration: underline; }
+.linklike { background: none; border: none; color: var(--navy-text); font-weight: 600; font-size: 13px; padding: 0; text-decoration: underline; }
 .mono { font-variant-numeric: tabular-nums; }
 .right { text-align: right; }
 .center { text-align: center; }
@@ -203,21 +211,21 @@ select.termsel { width: auto; }
 
 /* ---------- Upgrade additions ---------- */
 .statusbtn { padding: 8px 6px; border-radius: 7px; border: 1.5px solid var(--line); background: var(--card); font-size: 12px; font-weight: 700; color: var(--grey); text-align: center; cursor: pointer; }
-.statusbtn.on.P { background: #E7F3EA; border-color: var(--ok); color: var(--ok); }
-.statusbtn.on.A { background: #FBE7E7; border-color: var(--bad); color: var(--bad); }
-.statusbtn.on.L { background: #FBF0E4; border-color: var(--warn); color: var(--warn); }
+.statusbtn.on.P { background: #E7F3EA; border-color: var(--ok); color: #174D28; }
+.statusbtn.on.A { background: #FBE7E7; border-color: var(--bad); color: #7C1F1F; }
+.statusbtn.on.L { background: #FBF0E4; border-color: var(--warn); color: #8F3F12; }
 .statusbtn.on.U { background: var(--cream); border-color: #b9a76a; color: #8a6d1f; }
 .pill.unmarked { background: #ECE7D8; color: #8a6d1f; }
 .rolebadge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; background: rgba(255,255,255,.1); color: #fff; padding: 6px 10px; border-radius: 20px; }
-.navsection { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: rgba(255,255,255,.35); padding: 14px 20px 6px; }
-.lockednote { background: #FBE7E7; border: 1px solid var(--bad); color: var(--bad); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
+.navsection { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: rgba(255,255,255,.8); font-weight: 600; padding: 14px 20px 6px; }
+.lockednote { background: #FBE7E7; border: 1px solid var(--bad); color: #7C1F1F; border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
 .auditrow { font-size: 12.5px; }
 .auditrow .who { font-weight: 600; }
 .reqcheck { display:flex; align-items:center; gap:8px; padding:6px 0; }
 .identityBox { padding: 10px 20px 4px; }
 .identityBox select, .identityBox input { width: 100%; font-size: 12.5px; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.25); background: rgba(255,255,255,.08); color: #fff; margin-bottom: 6px; }
 .identityBox select option { color: #111; }
-.identityBox label { font-size: 10px; color: rgba(255,255,255,.55); text-transform: uppercase; letter-spacing: .05em; }
+.identityBox label { font-size: 10.5px; color: rgba(255,255,255,.85); text-transform: uppercase; letter-spacing: .05em; }
 
 /* ---------- Print ---------- */
 #printArea { display: none; }
@@ -240,15 +248,17 @@ select.termsel { width: auto; }
 .signin-card {
   background: #fff; border-radius: 18px; padding: 36px 34px 26px; width: 100%; max-width: 380px;
   text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.35); margin: auto;
+  /* The card is always white, so always use the light-theme colours inside it (even on dark-mode phones) */
+  --navy-text:#16345E; --ink:#1B1F27; --grey:#4A4A4A; --line:#D9D4C6; --card:#fff; --bad:#A32E2E; --ok:#2E7D45; --warn:#8F3F12; color:#1B1F27;
 }
 .signin-card img { width: 76px; height: auto; margin-bottom: 10px; }
-.signin-school { font-family: 'Source Serif 4', serif; font-weight: 700; font-size: 20px; color: var(--navy); letter-spacing: .01em; }
-.signin-tag { font-size: 12px; color: var(--gold); font-style: italic; margin-top: 2px; }
+.signin-school { font-family: 'Source Serif 4', serif; font-weight: 700; font-size: 20px; color: var(--navy-text); letter-spacing: .01em; }
+.signin-tag { font-size: 12.5px; color: #85620F; font-style: italic; margin-top: 2px; }
 .signin-place { font-size: 11.5px; color: var(--grey); margin-top: 4px; }
 .signin-divider { height: 1px; background: var(--line); margin: 18px 0; }
 .signin-title { font-family: 'Source Serif 4', serif; font-weight: 700; font-size: 16px; color: var(--ink); }
 .signin-sub { font-size: 12.5px; color: var(--grey); margin: 4px 0 18px; }
-.signin-foot { font-size: 10.5px; color: #aaa; margin-top: 16px; line-height: 1.5; }
+.signin-foot { font-size: 11px; color: #555; margin-top: 16px; line-height: 1.5; }
 
 /* ---------- Mobile ---------- */
 @media (max-width: 860px) {
@@ -284,11 +294,11 @@ select.termsel { width: auto; }
 .vp-bad{font-size:22px;font-weight:800;color:#B3261E;margin:12px 0 8px;letter-spacing:.03em;}
 
 /* locked-css */
-.btn.locked,.btn.locked:hover{background:#b7bcc4 !important;border-color:#b7bcc4 !important;color:#fff !important;cursor:not-allowed;opacity:1;box-shadow:none;}
-.statusbtn:disabled{opacity:.55;cursor:not-allowed;}
+.btn.locked,.btn.locked:hover{background:#5F6B7A !important;border-color:#5F6B7A !important;color:#fff !important;cursor:not-allowed;opacity:1;box-shadow:none;}
+.statusbtn:disabled{opacity:.8;cursor:not-allowed;}
 /* rbac-css */
 .ss{position:relative}.ss-input{width:100%}.ss-list{position:absolute;z-index:900;left:0;right:0;max-height:230px;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 26px rgba(0,0,0,.18);margin-top:2px}.ss-opt{padding:7px 10px;font-size:13px;cursor:pointer}.ss-opt:hover{background:var(--cream)}.ss-grp{padding:5px 10px;font-size:10.5px;font-weight:700;color:var(--grey);text-transform:uppercase;letter-spacing:.06em;background:#fafafa}
-.badge{display:inline-block;padding:2px 9px;border-radius:6px;font-size:11px;font-weight:600;margin:1px 3px 1px 0}.b-rank{background:#E8EEF8;color:#16345E}.b-por{background:#F6E9EB;color:#7A1F2B}.b-dept{background:#EEF3EA;color:#2E6B3E}.b-role{background:#FBF3DD;color:#8a6d1f}
+.badge{display:inline-block;padding:2px 9px;border-radius:6px;font-size:11px;font-weight:600;margin:1px 3px 1px 0}.b-rank{background:#E8EEF8;color:#16345E}.b-por{background:#F6E9EB;color:#7A1F2B}.b-dept{background:#EEF3EA;color:#2E6B3E}.b-role{background:#FBF3DD;color:#6E5412}
 .matrix td,.matrix th{text-align:center;font-size:11.5px;padding:6px 5px}.matrix td:first-child,.matrix th:first-child{text-align:left;position:sticky;left:0;background:#fff}
 </style>
 </head>
@@ -313,7 +323,7 @@ select.termsel { width: auto; }
     </div>
     <div id="signinError" style="color:var(--bad);font-size:12.5px;margin-bottom:10px;text-align:left;"></div>
     <button class="btn" id="signinBtn" style="width:100%;justify-content:center;padding:12px;font-size:14.5px;" onclick="doSignIn()">Sign In &rarr;</button>
-    <div style="margin-top:12px;font-size:13px;"><a href="#" onclick="showForgot();return false;" style="color:var(--navy);">Forgot your password?</a></div>
+    <div style="margin-top:12px;font-size:13px;"><a href="#" onclick="showForgot();return false;" style="color:var(--navy-text);">Forgot your password?</a></div>
     <div class="signin-foot">Private system for ShiShenri Schools staff, hosted on your own Supabase project. No subscription — this is yours.</div>
   </div>
 </div>
@@ -329,7 +339,7 @@ select.termsel { width: auto; }
       <div class="field" style="text-align:left;"><label>Email</label><input id="resetEmail" type="email" placeholder="you@example.com" onkeydown="if(event.key==='Enter')sendResetLink();"></div>
       <div id="resetMsg" style="font-size:12.5px;margin-bottom:10px;text-align:left;"></div>
       <button class="btn" id="resetSendBtn" style="width:100%;justify-content:center;padding:12px;" onclick="sendResetLink()">Send reset link</button>
-      <div style="margin-top:12px;font-size:13px;"><a href="#" onclick="backToSignIn();return false;" style="color:var(--navy);">&larr; Back to sign in</a></div>
+      <div style="margin-top:12px;font-size:13px;"><a href="#" onclick="backToSignIn();return false;" style="color:var(--navy-text);">&larr; Back to sign in</a></div>
     </div>
     <div id="resetNewBox" style="display:none;">
       <div class="signin-title">Choose a new password</div>
@@ -359,7 +369,7 @@ select.termsel { width: auto; }
       <button class="btn small ghost" style="width:100%;justify-content:center;margin-top:6px;" onclick="openChangePassword()">Change Password</button>
     </div>
     <div id="navList"></div>
-    <div class="foot">Private to ShiShenri Schools.<br>Hosted on your own Supabase + Vercel — no subscription, fully yours.<div style="margin-top:8px;opacity:.6;font-size:10.5px;">Built by Nggonri Technologies</div></div>
+    <div class="foot">Private to ShiShenri Schools.<br>Hosted on your own Supabase + Vercel — no subscription, fully yours.<div style="margin-top:8px;font-size:11px;color:rgba(255,255,255,.75);">Built by Nggonri Technologies</div></div>
   </nav>
 
   <div id="mainWrap">
@@ -404,7 +414,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r27'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r28'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -2901,7 +2911,7 @@ async function renderGenericModule(moduleKey){
   if (error) return `<div class="panel"><div class="empty" style="color:var(--bad);">Could not load: ${esc(error.message)}</div></div>`;
   return `
   <div class="panel">
-    ${mod.confidential ? `<div class="lockednote" style="background:#FBF0E4;border-color:var(--warn);color:var(--warn);">Confidential — Admin/Head of School only by convention.</div>` : ''}
+    ${mod.confidential ? `<div class="lockednote" style="background:#FBF0E4;border-color:var(--warn);color:#8F3F12;">Confidential — Admin/Head of School only by convention.</div>` : ''}
     ${mod.note ? `<div class="bignote" style="margin-bottom:14px;">${esc(mod.note)}</div>` : ''}
     <div class="row between" style="margin-bottom:14px;">
       <span class="desc" style="margin:0;">${(rows||[]).length} record(s)</span>
@@ -5390,7 +5400,7 @@ function permPickerHtml(prefix){
     <div class="desc" style="margin:0 0 6px;">Everything the role carries is ticked, which is its <strong>full access</strong>. Untick anything this person should <strong>not</strong> have for now (for example while a situation lasts). It only affects this person; the role itself is not changed. You can come back and tick it again at any time.</div>
     <div class="row" style="margin-bottom:6px;"><button type="button" class="btn small secondary" onclick="ppAll('${prefix}',true)">Give ALL the role's privileges</button><button type="button" class="btn small ghost" onclick="ppAll('${prefix}',false)">Untick all</button></div>
     <div style="max-height:240px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:6px 12px;">${roleHtml || '<div class="desc">This role has no privileges yet.</div>'}</div>
-    <details style="margin-top:8px;"><summary style="cursor:pointer;font-size:13px;color:var(--navy);">Add more privileges beyond this role&hellip;</summary>
+    <details style="margin-top:8px;"><summary style="cursor:pointer;font-size:13px;color:var(--navy-text);">Add more privileges beyond this role&hellip;</summary>
       <div style="max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:6px 12px;margin-top:6px;">${extraHtml}</div>
       <div class="field" style="margin-top:8px;max-width:260px;"><label>Extra privileges end on ${isProp ? '<span style="font-weight:400;color:var(--grey);">(optional)</span>' : '*'}</label><input id="pp_${prefix}_end" type="date"></div>
     </details></div>`;
@@ -5629,7 +5639,7 @@ async function loadCareerRefs(force){
 const rankObj = n => CAREER.ranks.find(r => r.rank === n) || CAREER_RANKS_FALLBACK.find(r => r.rank === n);
 const rankLabel = n => { const r = rankObj(n); return r ? `${r.code} — ${r.designation}` : '—'; };
 const rankItems = () => (CAREER.ranks.length ? CAREER.ranks : CAREER_RANKS_FALLBACK).map(r => ({ value: r.rank, label: `${String(r.rank).padStart(2, '0')} — ${r.designation}` }));
-const rankBadge = n => n ? `<span class="badge b-rank">${esc(rankLabel(n))}</span>` : `<span class="badge" style="background:#eee;color:#777;">No rank yet</span>`;
+const rankBadge = n => n ? `<span class="badge b-rank">${esc(rankLabel(n))}</span>` : `<span class="badge" style="background:#eee;color:#4a4a4a;">No rank yet</span>`;
 const positionById = id => CAREER.positions.find(p => p.id === id);
 function bandsForRank(r){ return CAREER.bands.filter(b => b.rank === r && b.status !== 'retired'); }
 function careerUnavailable(){ return `<div class="panel"><div class="empty"><div class="big">&#128274;</div><strong>The career framework has not been installed in the database yet.</strong><br>Run SQL files 19, 20 and 21 in Supabase, then reload.</div></div>`; }
@@ -5827,7 +5837,7 @@ async function openStaffForm(arg){
   }
   const staffItems = (await loadStaffChoices()).filter(i => i.value !== s.id);
   const canBank = hasPerm('edit_staff') || hasPerm('edit_salary'), canSal = hasPerm('edit_salary');
-  const h = (t) => `<h3 style="font-size:13.5px;margin:16px 0 8px;color:var(--navy);border-bottom:1px solid var(--line);padding-bottom:4px;">${t}</h3>`;
+  const h = (t) => `<h3 style="font-size:13.5px;margin:16px 0 8px;color:var(--navy-text);border-bottom:1px solid var(--line);padding-bottom:4px;">${t}</h3>`;
   openModal(`
     <h3>${isNew ? 'Register staff' : 'Edit staff details'}</h3>
     <div class="row" style="align-items:flex-start;gap:14px;margin-bottom:6px;">
