@@ -414,7 +414,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r29'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r30'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -3961,7 +3961,7 @@ function feeSummary(b){
            prevOwe, prevStudents: new Set(prevOwe.map(r => r.s.id)).size, prevTotal: prevOwe.reduce((a, r) => a + r.bal, 0) };
 }
 const classOrder = id => { const i = CLASSES.findIndex(c => c.id === id); return i < 0 ? 99 : i; };
-const sortFeeRows = rows => [...rows].sort((a, b) => classOrder(a.s.class_id) - classOrder(b.s.class_id) || String(a.s.name || '').localeCompare(b.s.name || '') || String(a.term).localeCompare(String(b.term)));
+const sortFeeRows = rows => [...rows].sort((a, b) => classOrder(a.s.class_id) - classOrder(b.s.class_id) || String(a.s.name || '').localeCompare(b.s.name || '') || termSortKey(a.term).localeCompare(termSortKey(b.term)));
 
 // ---------- dashboard tiles ----------
 async function feeFollowUpPanel(){
@@ -3982,8 +3982,8 @@ async function feeFollowUpPanel(){
 }
 async function feeDashDetail(k){
   const b = await feeBook(true); const m = feeSummary(b);
-  const row = (r, showTerm) => `<tr class="dclick" data-s="${esc(((r.s.name||'')+' '+(r.s.student_id||'')+' '+(classById(r.s.class_id)?.name||'')).toLowerCase())}" onclick="dashGoStudent('${r.s.id}')"><td>${esc(r.s.name)}</td><td>${esc(classById(r.s.class_id)?.name||'')}</td>${showTerm?`<td>${esc(r.term)}</td>`:''}<td class="right mono">${naira(r.exp)}</td><td class="right mono">${naira(r.paid)}</td><td class="right mono" style="color:var(--bad);">${naira(r.bal)}</td><td>${FEE_STATUS_LABEL[r.status]}</td></tr>`;
-  const head = (t) => ['Name','Class', ...(t?['Term']:[]), 'Expected','Paid','Balance','Status'];
+  const row = (r, showTerm) => `<tr class="dclick" data-s="${esc(((r.s.name||'')+' '+(r.s.student_id||'')+' '+(classById(r.s.class_id)?.name||'')).toLowerCase())}" onclick="dashGoStudent('${r.s.id}')"><td>${esc(r.s.name)}</td><td>${esc(classById(r.s.class_id)?.name||'')}</td>${showTerm?`<td>${esc(termSession(r.term))}</td><td>${esc(termName(r.term))}</td>`:''}<td class="right mono">${naira(r.exp)}</td><td class="right mono">${naira(r.paid)}</td><td class="right mono" style="color:var(--bad);">${naira(r.bal)}</td><td>${FEE_STATUS_LABEL[r.status]}</td></tr>`;
+  const head = (t) => ['Name','Class', ...(t?['Session','Term']:[]), 'Expected','Paid','Balance','Status'];
   const right = h => h.replace(/<th>(Expected|Paid|Balance)<\/th>/g, '<th class="right">$1</th>');
   if (k === 'feeSchol') {
     const list = sortFeeRows(b.cur.filter(r => r.sch));
@@ -4018,9 +4018,9 @@ function feeRepTable(b, st){
     body = rows.map((r, i) => [i+1, r.s.name, r.s.student_id || '', classById(r.s.class_id)?.name || '', r.sch.name, (r.sch.percent ?? '') + '%', N(r.tuition), N(r.disc), N(r.exp), N(r.paid), N(r.bal)]);
     foot = ['', 'TOTAL', '', '', '', '', '', N(rows.reduce((a, r) => a + r.disc, 0)), N(rows.reduce((a, r) => a + r.exp, 0)), N(rows.reduce((a, r) => a + r.paid, 0)), N(rows.reduce((a, r) => a + r.bal, 0))];
   } else {
-    head = ['#','Name','Student ID','Class','Term','Expected','Paid','Balance','Status','Parent phone'];
-    body = rows.map((r, i) => [i+1, r.s.name, r.s.student_id || '', classById(r.s.class_id)?.name || '', r.term, N(r.exp), N(r.paid), N(r.bal), FEE_STATUS_LABEL[r.status], r.s.parent_phone || '']);
-    foot = ['', 'TOTAL', '', '', '', N(rows.reduce((a, r) => a + r.exp, 0)), N(rows.reduce((a, r) => a + r.paid, 0)), N(rows.reduce((a, r) => a + r.bal, 0)), '', ''];
+    head = ['#','Name','Student ID','Class','Session','Term','This / earlier','Fees set on','Expected','Paid','Balance','Status','Parent phone'];
+    body = rows.map((r, i) => [i+1, r.s.name, r.s.student_id || '', classById(r.s.class_id)?.name || '', termSession(r.term), termName(r.term), r.when, r.a && r.a.created_at ? String(r.a.created_at).slice(0, 10) : '', N(r.exp), N(r.paid), N(r.bal), FEE_STATUS_LABEL[r.status], r.s.parent_phone || '']);
+    foot = ['', 'TOTAL', '', '', '', '', '', '', N(rows.reduce((a, r) => a + r.exp, 0)), N(rows.reduce((a, r) => a + r.paid, 0)), N(rows.reduce((a, r) => a + r.bal, 0)), '', ''];
   }
   const title = { outstanding: 'Outstanding Fees (this term and earlier terms)', paid: `Fully Paid Fees — ${st.term || b.term}`, scholarship: `Students on Scholarship — ${b.term}` }[st.kind];
   return { rows, head, body, foot, title: title + (st.classId !== 'ALL' ? ' — ' + (classById(st.classId)?.name || '') : '') };
@@ -4140,10 +4140,102 @@ async function saveScholarship(id, n){
   } catch(e) { toast('Could not save: ' + (/function .* does not exist|schema cache/i.test(e.message) ? 'run SQL file 38 first.' : e.message)); }
 }
 
+// =====================================================================
+// ALL-RECORDS REPORT (Reports tab): any module's entries, by date range, with print / CSV / Excel
+// =====================================================================
+const REC_NOTE = { sum: true };
+function recModules(){
+  const gen = k => { const m = GENERIC_MODULES[k]; return { key: k, label: m.title, table: m.table, perm: k,
+    cols: m.fields.map(f => ({ h: f.label, g: r => r[f.key], sum: ['amount','estimated_cost','actual_cost','value'].includes(f.key) })),
+    date: ({ staffLeave: 'start_date', assets: 'date_acquired' })[k] || 'date', statuses: (m.fields.find(f => f.key === 'status') || {}).options || null }; };
+  const list = [gen('procurement'), gen('assets'), gen('safeguarding'), gen('discipline'), gen('expenses'), gen('staffLeave'), gen('inspections'), gen('communications')];
+  list.push({ key: 'admissions', label: 'Admissions (applicants)', table: 'admissions', perm: 'admissions', date: 'date_received',
+    cols: [['Admission form no.', 'admission_form_number'], ['Name', 'name'], ['Date of birth', 'dob'], ['Gender', 'gender'], ['Class applied for', 'class_applied_for'], ['Parent', 'parent_name'], ['Parent phone', 'parent_phone'], ['Date received', 'date_received'], ['Status', 'status'], ['Notes', 'notes']].map(([h, k]) => ({ h, g: r => r[k] })),
+    statuses: ADMISSION_STATUSES });
+  list.push({ key: 'payments', label: 'Fee payments / receipts', table: 'fee_payments', perm: 'receipts', date: 'date', needs: 'students',
+    cols: [{ h: 'Receipt no.', g: r => r.receipt_no }, { h: 'Date', g: r => r.date }, { h: 'Student', g: (r, x) => (x.students[r.student_id] || {}).name || '' }, { h: 'Class', g: (r, x) => classById((x.students[r.student_id] || {}).class_id)?.name || '' },
+           { h: 'Session', g: r => termSession(r.term) }, { h: 'Term', g: r => termName(r.term) }, { h: 'Amount (₦)', g: r => r.amount, sum: true }, { h: 'Method', g: r => r.method }, { h: 'Note', g: r => r.note }, { h: 'Recorded by', g: r => r.recorded_by }] });
+  list.push({ key: 'salary', label: 'Staff salary payments', table: 'salary_payments', perm: 'salary', date: 'date_paid', needs: 'staff',
+    cols: [{ h: 'Staff', g: (r, x) => (x.staff[r.staff_id] || {}).name || '' }, { h: 'Month', g: r => r.month }, { h: 'Year', g: r => r.year }, { h: 'Amount (₦)', g: r => r.amount, sum: true }, { h: 'Bank', g: r => r.bank_name }, { h: 'Date paid', g: r => r.date_paid }, { h: 'Notes', g: r => r.notes }, { h: 'Recorded by', g: r => r.recorded_by }] });
+  list.push({ key: 'audit', label: 'Audit log (who changed what)', table: 'audit_log', perm: 'auditLog', date: 'ts',
+    cols: [['When', 'ts'], ['User', 'user_name'], ['Role', 'role'], ['Action', 'action'], ['Record type', 'entity'], ['Record', 'entity_id'], ['Reason', 'reason'], ['Source', 'source']].map(([h, k]) => ({ h, g: r => r[k] })) });
+  return list.filter(m => can(m.perm) && (ACCESS_MODE !== 'rbac' || m.perm !== 'salary' || hasAnyPerm(['view_salary', 'process_payroll'])));
+}
+function termSession(t){ const m = String(t || '').match(/\d{4}\s*\/\s*\d{2,4}/); return m ? m[0].replace(/\s/g, '') : ''; }
+function termName(t){ const s = termSession(t); return String(t || '').replace(s, '').replace(/\s+/g, ' ').trim(); }
+function termSortKey(t){ const y = (String(t || '').match(/\d{4}/) || ['0000'])[0]; const n = /first/i.test(t) ? 1 : /second/i.test(t) ? 2 : /third/i.test(t) ? 3 : 9; return y + n; }
+let recRepState = { kind: 'procurement', from: '', to: '', q: '', status: '' };
+function recRepCapture(){
+  const g = id => { const e = document.getElementById(id); return e ? e.value : null; };
+  ['from', 'to', 'q', 'status'].forEach(k => { const v = g('rr_' + k); if (v != null) recRepState[k] = v; });
+}
+function recRepKind(v){ recRepCapture(); recRepState.kind = v; recRepState.status = ''; renderTabAsync(); }
+async function recRepRows(mod){
+  const rows = await fetchEveryRow(mod.table, '*');
+  const x = { students: {}, staff: {} };
+  if (mod.needs === 'students') (await fetchEveryRow('students', 'id,name,class_id')).forEach(s => { x.students[s.id] = s; });
+  if (mod.needs === 'staff') (await fetchEveryRow('staff', 'id,name')).forEach(s => { x.staff[s.id] = s; });
+  const st = recRepState, q = (st.q || '').trim().toLowerCase();
+  const dateOf = r => String(r[mod.date] || r.created_at || '').slice(0, 10);
+  let out = rows.filter(r => { const d = dateOf(r); return (!st.from || d >= st.from) && (!st.to || d <= st.to); });
+  if (st.status) out = out.filter(r => String(r.status || '') === st.status);
+  const table = out.map(r => ({ r, d: dateOf(r), cells: mod.cols.map(c => c.g(r, x)) }));
+  const filtered = q ? table.filter(t => t.cells.some(v => String(v ?? '').toLowerCase().includes(q))) : table;
+  filtered.sort((a, b) => String(b.d).localeCompare(String(a.d)));
+  return filtered;
+}
+async function generateRecordsReport(mode){
+  recRepCapture();
+  const mod = recModules().find(m => m.key === recRepState.kind); if (!mod) { toast('Choose a record type.'); return; }
+  try {
+    const rows = await recRepRows(mod);
+    const headers = ['#', ...mod.cols.map(c => c.h), 'Date entered'];
+    const data = rows.map((t, i) => [i + 1, ...t.cells.map(v => v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : v)), String(t.r.created_at || t.r.ts || '').slice(0, 10)]);
+    const sums = mod.cols.map(c => c.sum ? rows.reduce((a, t, i) => a + (Number(t.cells[mod.cols.indexOf(c)]) || 0), 0) : null);
+    const total = sums.some(v => v != null) ? ['', ...sums.map((v, i) => v != null ? v : (i === 0 ? 'TOTAL' : '')), ''] : null;
+    const st = recRepState, range = (st.from || st.to) ? ` (${st.from || 'start'} to ${st.to || 'today'})` : '';
+    const title = `${mod.label}${range}`;
+    const fname = 'shishenri_' + mod.key + '_report';
+    if (mode === 'csv') { downloadCSVText(rowsToCsv([headers, ...data, ...(total ? [total] : [])]), fname + '.csv'); return; }
+    if (mode === 'xlsx') { downloadXLSXRows([headers, ...data, ...(total ? [total] : [])], fname + '.xlsx', mod.key); return; }
+    if (!data.length) { toast('No records match these filters.'); return; }
+    const cell = 'border:1px solid #ccc;padding:5px;vertical-align:top;';
+    printHTML(`<div style="font-family:Inter,sans-serif;font-size:11px;"><p style="color:#555;">${data.length} record(s). Printed ${new Date().toLocaleDateString('en-NG')}.</p>
+      <table style="width:100%;border-collapse:collapse;"><tr style="background:#16345E;color:#fff;">${headers.map(h => `<th style="padding:5px;text-align:left;">${esc(h)}</th>`).join('')}</tr>
+      ${data.map(r => `<tr>${r.map(c => `<td style="${cell}">${esc(String(c))}</td>`).join('')}</tr>`).join('')}
+      ${total ? `<tr style="font-weight:700;background:#f3f1ea;">${total.map(c => `<td style="${cell}">${c === '' || c == null ? '' : (typeof c === 'number' ? esc(naira(c)) : esc(String(c)))}</td>`).join('')}</tr>` : ''}</table></div>`, title);
+  } catch(e) { toast('Could not build the report: ' + e.message); }
+}
+async function recordsReportPanel(){
+  const mods = recModules(); if (!mods.length) return '';
+  if (!mods.find(m => m.key === recRepState.kind)) recRepState.kind = mods[0].key;
+  const mod = mods.find(m => m.key === recRepState.kind), st = recRepState;
+  return `<div class="panel">
+    <h2>Records Report &mdash; any entry in the system</h2>
+    <div class="desc">Pick a record type, optionally a date range or a word to search for, then print it or export it. You only see the record types your access allows.</div>
+    <div class="row" style="margin-bottom:10px;">
+      <select id="rr_kind" onchange="recRepKind(this.value)">${mods.map(m => `<option value="${m.key}" ${m.key === st.kind ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}</select>
+      ${mod.statuses ? `<select id="rr_status"><option value="">Any status</option>${mod.statuses.map(o => `<option ${st.status === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>` : ''}
+    </div>
+    <div class="row" style="margin-bottom:10px;">
+      <label class="desc" style="margin:0;">From <input type="date" id="rr_from" value="${esc(st.from)}" style="width:auto;display:inline-block;"></label>
+      <label class="desc" style="margin:0;">To <input type="date" id="rr_to" value="${esc(st.to)}" style="width:auto;display:inline-block;"></label>
+      <input id="rr_q" value="${esc(st.q)}" placeholder="Search a word or name (optional)" style="max-width:260px;">
+    </div>
+    <div class="row">
+      <button class="btn small" onclick="generateRecordsReport('preview')">Preview / Word / PDF</button>
+      <button class="btn small secondary" onclick="generateRecordsReport('csv')">Export CSV</button>
+      <button class="btn small secondary" onclick="generateRecordsReport('xlsx')">Export Excel</button>
+    </div>
+  </div>`;
+}
+
 async function renderReports(){
   const feeRepHtml = await feeReportsPanel();
+  const recRepHtml = await recordsReportPanel();
   return `
   ${feeRepHtml}
+  ${recRepHtml}
   <div class="panel">
     <h2>Daily Management Report</h2>
     <div class="desc">One printable page: enrolment, attendance, fees, discipline, safeguarding, facilities.</div>
