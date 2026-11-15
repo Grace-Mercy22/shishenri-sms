@@ -414,7 +414,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r28'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r29'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -855,7 +855,8 @@ async function renderDashboard(){
 
   let feeExpected = 0, feeCollected = 0;
   if (term && showFees && hasPerm('view_fees') && needStudents) {
-    active.forEach(s => feeExpected += expectedFeeTotal(s.class_id, s.fee_category));
+    await ensureFeePct();
+    active.forEach(s => feeExpected += expectedFeeFor(s));
     const ids = active.map(s=>s.id);
     if (ids.length) {
       const { data: payments } = await sb.from('fee_payments').select('amount').in('student_id', ids).eq('term', term);
@@ -899,6 +900,7 @@ async function renderDashboard(){
     </div>`;
   }
 
+  const feeFollowHtml = (showFees && canFeeReports()) ? await feeFollowUpPanel() : '';
   const mineHtml = showMine ? await mySummaryHtml() : '';
   const anyKpi = showStudentCards || showStaffCards;
   return `
@@ -935,6 +937,7 @@ async function renderDashboard(){
     </div>
     <div style="height:10px;background:var(--line);border-radius:6px;overflow:hidden;"><div style="height:100%;width:${feePct}%;background:${feePct>=80?'var(--ok)':feePct>=40?'var(--warn)':'var(--bad)'};"></div></div>
   </div>` : ''}
+  ${feeFollowHtml}
   ${flagged.length ? `<div class="panel" style="border-left:4px solid var(--bad);">
     <h2>Repeated Absence — needs follow-up</h2>
     <div class="desc">3 or more absences in the last 14 days. Click a pupil to open the record.</div>
@@ -1000,7 +1003,8 @@ async function mySummaryHtml(){
 let DASH = { kind: null, arg: null, date: null, status: '', q: '' };
 const DASH_NEEDS = { students:'view_students', staff:'view_staff', stuAtt:'view_attendance', staffAtt:'view_staff_attendance', outside:'view_staff_attendance',
   fees:'view_fees', admissions:'view_admissions', discipline:'view_discipline', safeguarding:'view_safeguarding', inspections:'view_inspections',
-  procurement:'view_procurement', leave:'view_staff_leave', class:'view_students' };
+  procurement:'view_procurement', leave:'view_staff_leave', class:'view_students',
+  feeSchol:'view_fee_reports', feeOwe:'view_fee_reports', feePart:'view_fee_reports', feePrev:'view_fee_reports' };
 const fmtDist = m => m == null ? '—' : (m >= 1000 ? (m/1000).toFixed(1) + ' km' : Math.round(m) + ' m');
 function dashGo(tab){ closeModal(); CUR_TAB = tab; openStudentId = null; openStaffProfileId = null; renderNav(); render(); }
 function dashGoStudent(id){ if (!can('students')) return; closeModal(); CUR_TAB = 'students'; openStudentId = id; renderNav(); render(); }
@@ -1032,6 +1036,7 @@ const spill = st => ({ P:'<span class="pill ok">Present</span>', L:'<span class=
 
 async function dashBody(){
   const k = DASH.kind, d = DASH.date;
+  if (['feeSchol','feeOwe','feePart','feePrev'].includes(k)) return await feeDashDetail(k);
   if (k === 'students' || k === 'class') {
     const { data } = await sb.from('students').select('*').order('name');
     let list = (data || []).filter(isActiveStudent);
@@ -1079,13 +1084,13 @@ async function dashBody(){
     return { title: `Staff attendance &mdash; ${fmtDate(d)}`, date: true, sub: `${list.length} person(s) shown`, controls: sel + dashSearchBox(), body: dtable(['Name','Status','Time in','Time out','Location'], rows, 'No staff match.'), go: ['staffAttendance','Open Staff Attendance'] };
   }
   if (k === 'fees') {
-    const term = SETTINGS_CACHE.current_term;
+    const term = SETTINGS_CACHE.current_term; await ensureFeePct();
     const { data: sd } = await sb.from('students').select('id,class_id,fee_category,status'); const act = (sd || []).filter(isActiveStudent);
     const { data: pay } = act.length ? await sb.from('fee_payments').select('student_id,amount').in('student_id', act.map(s => s.id)).eq('term', term) : { data: [] };
     const paid = {}; (pay || []).forEach(p => { paid[p.student_id] = (paid[p.student_id] || 0) + Number(p.amount); });
     let te = 0, tc = 0;
     const rows = CLASSES.map(c => { const ss = act.filter(s => s.class_id === c.id); if (!ss.length) return '';
-      const exp = ss.reduce((a, s) => a + expectedFeeTotal(s.class_id, s.fee_category), 0), col = ss.reduce((a, s) => a + (paid[s.id] || 0), 0); te += exp; tc += col;
+      const exp = ss.reduce((a, s) => a + expectedFeeFor(s), 0), col = ss.reduce((a, s) => a + (paid[s.id] || 0), 0); te += exp; tc += col;
       return `<tr><td>${c.name}</td><td class="right mono">${ss.length}</td><td class="right mono">${naira(exp)}</td><td class="right mono">${naira(col)}</td><td class="right mono" style="color:${exp-col>0?'var(--bad)':'var(--ok)'};">${naira(exp-col)}</td><td class="right mono">${exp ? Math.round(100*col/exp) : 0}%</td></tr>`; }).join('');
     return { title: `Fees by class &mdash; ${esc(term)}`, sub: `${naira(tc)} collected of ${naira(te)} expected.`, body: dtable(['Class','Pupils','Expected','Collected','Outstanding','%'], rows, 'No data.').replace(/<th>(Pupils|Expected|Collected|Outstanding|%)<\/th>/g, '<th class="right">$1</th>'), go: ['fees','Open Fees'] };
   }
@@ -1153,6 +1158,12 @@ async function lowestFreeNumber(kind){
   const p = `SS/ADM/${year}/`;
   const [a, b] = await Promise.all([sb.from('students').select('admission_form_number'), sb.from('admissions').select('admission_form_number')]);
   return p + pad(lowest(nums([...(a.data||[]).map(r=>r.admission_form_number), ...(b.data||[]).map(r=>r.admission_form_number)], p)));
+}
+let ADM_AUTO = null;
+async function admissionAuto(){   // true once SQL file 36 is installed: the database numbers people automatically
+  if (ADM_AUTO !== null) return ADM_AUTO;
+  try { const { data, error } = await sb.rpc('admission_numbers_auto'); ADM_AUTO = !error && data === true; } catch(e) { ADM_AUTO = false; }
+  return ADM_AUTO;
 }
 async function nextStudentId(){ return lowestFreeNumber('student'); }
 async function nextAdmissionFormNumber(){ return lowestFreeNumber('admission'); }
@@ -1244,6 +1255,7 @@ async function renderStudentDetail(){
     <div class="field"><label>Parent Email</label><div>${esc(s.parent_email||'—')}</div></div>
     <div class="field"><label>Fee Category</label><div>${s.fee_category === 'new' ? 'New Student (Enrolment)' : 'Returning Student'}</div></div>
   </div>
+  ${await studentFeeHistoryPanel(s)}
   <div class="row">
     <button class="btn secondary small" onclick="CUR_TAB='fees';render();">View Fees</button>
     <button class="btn secondary small" onclick="CUR_TAB='results';render();">View Results</button>
@@ -1254,7 +1266,18 @@ async function renderStudentDetail(){
 async function openStudentForm(existing){
   const s = existing || {};
   const suggestedId = existing ? '' : await nextStudentId();
-  const suggestedForm = existing ? '' : await nextAdmissionFormNumber();
+  const autoAdm = await admissionAuto();
+  const suggestedForm = (existing || autoAdm) ? '' : await nextAdmissionFormNumber();
+  let scholHtml = '';
+  if (canScholarships()) {
+    try {
+      const [scR, curR] = await Promise.all([sb.from('scholarships').select('*').order('sort'), existing ? sb.from('student_scholarships').select('scholarship_id').eq('student_id', existing.id).maybeSingle() : Promise.resolve({ data: null })]);
+      if (scR.error) throw scR.error;
+      const curId = (curR.data && curR.data.scholarship_id) || '';
+      scholHtml = `<div class="field"><label>Scholarship <span style="font-weight:400;color:var(--grey);">(only people allowed to manage scholarships see this)</span></label>
+        <select id="f_schol" data-initial="${curId}"><option value="">None</option>${(scR.data||[]).map(x => `<option value="${x.id}" ${x.percent==null?'disabled':''} ${curId===x.id?'selected':''}>${esc(x.name)}${x.percent==null?' (set its percentage in Settings first)':' — '+x.percent+'% off tuition'}</option>`).join('')}</select></div>`;
+    } catch(e) { scholHtml = `<div class="desc">Scholarships are not switched on yet (run SQL file 38).</div>`; }
+  }
   openModal(`
     <h3>${existing ? 'Edit Student' : 'Add Student'}</h3>
     <div class="row" style="align-items:flex-start;gap:14px;margin-bottom:10px;">
@@ -1270,7 +1293,7 @@ async function openStudentForm(existing){
       <div class="field"><label>Full Name *</label><input id="f_name" value="${esc(s.name||'')}"></div>
       <div class="field"><label>Student ID</label><input id="f_studentid" value="${esc(s.student_id || suggestedId)}"></div>
     </div>
-    <div class="field"><label>Admission / Application Form Number</label><input id="f_admform" value="${esc(s.admission_form_number || suggestedForm)}"></div>
+    <div class="field"><label>Admission / Application Form Number</label><input id="f_admform" value="${esc(s.admission_form_number || suggestedForm)}" ${autoAdm && !s.admission_form_number ? 'placeholder="Assigned automatically when you save"' : ''}>${autoAdm ? `<div class="desc" style="margin:3px 0 0;">Leave empty and the system gives the next number. A number is never given to anyone else, even after the record is deleted.</div>` : ''}</div>
     <div class="fgrid">
       <div class="field"><label>Class *</label><select id="f_class">${CLASSES.map(c=>`<option value="${c.id}" ${s.class_id===c.id?'selected':''}>${c.name}</option>`).join('')}</select></div>
       <div class="field"><label>Gender</label><select id="f_gender"><option ${s.gender==='Male'?'selected':''}>Male</option><option ${s.gender==='Female'?'selected':''}>Female</option></select></div>
@@ -1288,6 +1311,7 @@ async function openStudentForm(existing){
       <div class="field"><label>Fee Category</label><select id="f_feecat"><option value="returning" ${s.fee_category!=='new'?'selected':''}>Returning Student</option><option value="new" ${s.fee_category==='new'?'selected':''}>New Student (Enrolment)</option></select></div>
       <div class="field"><label>Status</label><select id="f_status">${STUDENT_STATUSES.map(v=>`<option value="${v}" ${(s.status||'active')===v?'selected':''}>${STUDENT_STATUS_LABELS[v]}</option>`).join('')}</select></div>
     </div>
+    ${scholHtml}
     <div id="studentSaveStatus" class="desc"></div>
     <div class="mfoot">
       <button class="btn secondary" onclick="closeModal()">Cancel</button>
@@ -1390,10 +1414,19 @@ async function saveStudent(existingId){
       statusEl.textContent = 'Uploading photo…';
       data.photo_url = await uploadPhoto(photoFile, 'students');
     }
-    let res;
+    if (existingId && !admissionFormNumber) delete data.admission_form_number;   // never blank an issued number; the database fills one in if there is none
+    let res, newId = existingId;
     if (existingId) res = await sb.from('students').update(data).eq('id', existingId);
-    else res = await sb.from('students').insert(data);
+    else { res = await sb.from('students').insert(data).select('id').maybeSingle(); newId = res.data && res.data.id; }
     if (res.error) throw res.error;
+    const scholEl = document.getElementById('f_schol');
+    if (scholEl && scholEl.value !== (scholEl.dataset.initial || '')) {
+      if (!newId && data.student_id) { const r2 = await sb.from('students').select('id').eq('student_id', data.student_id).maybeSingle(); newId = r2.data && r2.data.id; }
+      if (!newId) throw new Error('The student was saved, but the scholarship could not be attached. Open the student and choose it again.');
+      const { error: se } = await sb.rpc('set_student_scholarship', { p_student: newId, p_scholarship: scholEl.value || null });
+      if (se) throw new Error('The student was saved, but the scholarship was not: ' + se.message);
+      FEE_PCT_AT = 0; FEE_BOOK = null; syncFeeAssessments(true);
+    }
     await logAudit(existingId?'update':'create', 'students', existingId||data.student_id, { name: data.name });
     closeModal(); toast('Student saved.'); renderTabAsync();
   } catch(e) {
@@ -1876,6 +1909,7 @@ async function renderSettingsTab(){
     <button class="btn small" onclick="saveTerm()">Save</button>
   </div>
   ${renderSchoolSettingsPanels()}
+  ${await scholarshipSettingsPanel()}
   <div class="panel">
     <h2>Subjects</h2>
     <div class="desc">Add or remove subjects per section.</div>
@@ -2302,8 +2336,13 @@ async function saveTerm(){
   if (document.getElementById('set_termstart')) payload.term_start_date = document.getElementById('set_termstart').value || null;
   if (termNumber === 3) payload.third_term_label = val; // remembered so next session's promotion knows which results to use
   try {
+    if (ACCESS_MODE === 'rbac' && SETTINGS_CACHE.current_term && SETTINGS_CACHE.current_term !== val) {
+      const ok = await syncFeeAssessments(true);   // freeze what everyone owed for the term that is ending
+      if (!ok) toast('Note: the fees for the ending term could not be frozen (SQL file 38 not installed, or no fee access). Earlier-term balances will not be tracked for it.');
+    }
     await updateSettingsRow(payload);
     Object.assign(SETTINGS_CACHE, payload);
+    FEE_BOOK = null; FEE_PCT_AT = 0;
     await logAudit('update', 'settings', 'term', payload);
     toast('Term updated.');
     // New session, First Term, and a Third Term on record that hasn't been promoted yet -> prepare promotions
@@ -3009,7 +3048,7 @@ async function copyCommunication(id){
 let feesState = { classId: 'ALL' };
 
 async function renderFees(){
-  await loadSettings();
+  await loadSettings(); await ensureFeePct(); syncFeeAssessments(false);
   const term = SETTINGS_CACHE.current_term;
   if (!term) return `<div class="panel"><div class="empty">Set a Current Term in Settings before recording fees.</div></div>`;
   const myClasses = visibleClasses('fees');
@@ -3030,7 +3069,7 @@ async function renderFees(){
 
   let totalExpected = 0, totalCollected = 0;
   const rows = roster.map(s => {
-    const expected = expectedFeeTotal(s.class_id, s.fee_category);
+    const expected = expectedFeeFor(s);
     const paid = paidByStudent[s.id] || 0;
     totalExpected += expected; totalCollected += paid;
     return { s, expected, paid, balance: Math.max(expected - paid, 0) };
@@ -3049,7 +3088,7 @@ async function renderFees(){
     <div class="tablewrap"><table>
       <tr><th>Name</th><th>Class</th><th class="right">Expected</th><th class="right">Paid</th><th class="right">Balance</th><th></th></tr>
       ${rows.map(r => `<tr>
-        <td>${esc(r.s.name)}</td><td>${classById(r.s.class_id)?.name||''}</td>
+        <td>${esc(r.s.name)}${FEE_PCT[r.s.id] ? ` <span class="pill warn" title="Part of the tuition is covered by a scholarship">&minus;${FEE_PCT[r.s.id]}% tuition</span>` : ''}</td><td>${classById(r.s.class_id)?.name||''}</td>
         <td class="right mono">${naira(r.expected)}</td><td class="right mono">${naira(r.paid)}</td>
         <td class="right mono" style="color:${r.balance>0?'var(--bad)':'var(--ok)'};">${naira(r.balance)}</td>
         <td class="right"><button class="btn small secondary" onclick="openPaymentForm('${r.s.id}')">Record Payment</button></td>
@@ -3057,16 +3096,28 @@ async function renderFees(){
     </table></div>`}
   </div>`;
 }
-async function openPaymentForm(studentId){
+async function openPaymentForm(studentId, termArg){
   const { data: s } = await sb.from('students').select('*').eq('id', studentId).maybeSingle();
   if (!s) return;
-  const term = SETTINGS_CACHE.current_term;
-  const expected = expectedFeeTotal(s.class_id, s.fee_category);
+  await ensureFeePct();
+  const curTerm = SETTINGS_CACHE.current_term; const term = termArg || curTerm;
+  let expected = expectedFeeFor(s), termOptions = [curTerm];
+  if (term !== curTerm || canFeeReports()) {
+    try {
+      const { data: asm } = await sb.from('fee_assessments').select('term,expected').eq('student_id', studentId);
+      const { data: pp } = await sb.from('fee_payments').select('term,amount').eq('student_id', studentId);
+      const pd = {}; (pp||[]).forEach(x => { pd[x.term] = (pd[x.term]||0) + Number(x.amount); });
+      (asm||[]).filter(a => a.term !== curTerm && (Number(a.expected) - (pd[a.term]||0) > 0 || a.term === term)).forEach(a => termOptions.push(a.term));
+      if (term !== curTerm) { const a = (asm||[]).find(x => x.term === term); expected = a ? Number(a.expected) : 0; }
+    } catch(e) {}
+  }
+  if (!termOptions.includes(term)) termOptions.push(term);
   const { data: payments } = await sb.from('fee_payments').select('*').eq('student_id', studentId).eq('term', term).order('date', { ascending: false });
   const paid = (payments||[]).reduce((a,p)=>a+Number(p.amount),0);
   openModal(`
     <h3>Record Payment — ${esc(s.name)}</h3>
-    <div class="msub">${classById(s.class_id)?.name} · ${esc(term)} · Expected ${naira(expected)} · Paid so far ${naira(paid)}</div>
+    <div class="msub">${classById(s.class_id)?.name} · ${esc(term)} · Expected ${naira(expected)} · Paid so far ${naira(paid)}${term!==curTerm?' · <strong>an earlier term</strong>':''}</div>
+    ${termOptions.length>1 ? `<div class="field"><label>Payment is for term</label><select id="pay_term" onchange="openPaymentForm('${studentId}', this.value)">${termOptions.map(t=>`<option value="${esc(t)}" ${t===term?'selected':''}>${esc(t)}${t===curTerm?' (current)':' (still owing)'}</option>`).join('')}</select></div>` : `<input type="hidden" id="pay_term" value="${esc(term)}">`}
     <div class="fgrid">
       <div class="field"><label>Amount (₦) *</label><input id="pay_amount" type="number"></div>
       <div class="field"><label>Date *</label><input id="pay_date" type="date" value="${todayISO()}"></div>
@@ -3079,11 +3130,11 @@ async function openPaymentForm(studentId){
     <h3 style="font-size:13px;margin:16px 0 4px;">Requirements <span style="font-weight:400;color:var(--grey);">(items to bring — not part of fees)</span></h3>
     <div style="margin-bottom:6px;">
       ${(REQUIREMENTS[feeSectionFor(s.class_id)]||[]).map(item => {
-        const met = !!(((s.requirements_met||{})[term]||{})[item]);
+        const met = !!(((s.requirements_met||{})[curTerm]||{})[item]);
         return `<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;"><input type="checkbox" style="width:auto;" ${met?'checked':''} onchange="toggleRequirement('${studentId}', this.dataset.item, this.checked)" data-item="${esc(item)}">${esc(item)}</label>`;
       }).join('')}
     </div>
-    <h3 style="font-size:13px;margin:16px 0 8px;">Payments this term</h3>
+    <h3 style="font-size:13px;margin:16px 0 8px;">Payments for ${esc(term)}</h3>
     <div class="tablewrap"><table>
       <tr><th>Receipt No.</th><th>Date</th><th class="right">Amount</th><th>Method</th><th></th></tr>
       ${(payments||[]).map(p=>`<tr><td class="mono">${esc(p.receipt_no||'—')}</td><td class="mono">${p.date}</td><td class="right mono">${naira(p.amount)}</td><td>${esc(p.method||'')}</td><td class="right"><button class="iconbtn" onclick="printReceipt('${p.id}')">Receipt</button></td></tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--grey);">None yet.</td></tr>'}
@@ -3104,14 +3155,14 @@ async function savePayment(studentId){
   btn.disabled = true; statusEl.textContent = 'Saving…';
   try {
     const { data: ins, error } = await sb.from('fee_payments').insert({
-      student_id: studentId, term: SETTINGS_CACHE.current_term, amount, date,
+      student_id: studentId, term: (document.getElementById('pay_term')?.value || SETTINGS_CACHE.current_term), amount, date,
       method: document.getElementById('pay_method').value,
       note: document.getElementById('pay_note').value.trim(),
       recorded_by: MY_PROFILE?.name || 'Unknown',
     }).select('receipt_no').maybeSingle();
     if (error) throw error;
     await logAudit('create', 'fee_payments', studentId, { amount, date });
-    toast('Payment recorded — Receipt ' + (ins?.receipt_no || '') + '.'); openPaymentForm(studentId); renderTabAsync();
+    FEE_BOOK = null; toast('Payment recorded — Receipt ' + (ins?.receipt_no || '') + '.'); openPaymentForm(studentId, document.getElementById('pay_term')?.value); renderTabAsync();
   } catch(e) { btn.disabled = false; statusEl.textContent = 'Could not save: ' + e.message; }
 }
 async function renderReceipts(){
@@ -3250,11 +3301,12 @@ async function renderAdmissions(){
 }
 async function openAdmissionForm(existing){
   const r = existing || {};
-  const suggestedForm = existing ? '' : await nextAdmissionFormNumber();
+  const autoAdm = await admissionAuto();
+  const suggestedForm = (existing || autoAdm) ? '' : await nextAdmissionFormNumber();
   openModal(`
     <h3>${existing?'Edit':'New'} Admission Inquiry</h3>
     <div class="field"><label>Child's Name *</label><input id="ad_name" value="${esc(r.name||'')}"></div>
-    <div class="field"><label>Admission Form Number</label><input id="ad_formnum" value="${esc(r.admission_form_number || suggestedForm)}"></div>
+    <div class="field"><label>Admission Form Number</label><input id="ad_formnum" value="${esc(r.admission_form_number || suggestedForm)}" ${autoAdm && !r.admission_form_number ? 'placeholder="Assigned automatically when you save"' : ''}></div>
     <div class="fgrid">
       <div class="field"><label>Date of Birth</label><input id="ad_dob" type="date" value="${r.dob||''}"></div>
       <div class="field"><label>Class Applied For *</label><select id="ad_class">${CLASSES.map(c=>`<option value="${c.name}" ${r.class_applied_for===c.name?'selected':''}>${c.name}</option>`).join('')}</select></div>
@@ -3290,6 +3342,7 @@ async function saveAdmission(existingId){
     notes: document.getElementById('ad_notes').value.trim(),
   };
   btn.disabled = true;
+  if (existingId && !data.admission_form_number) delete data.admission_form_number;   // an issued number is never blanked
   try {
     let res;
     if (existingId) res = await sb.from('admissions').update(data).eq('id', existingId);
@@ -3316,6 +3369,7 @@ async function enrolAdmission(id){
       name: r.name, class_id: cls?cls.id:CLASSES[0].id, dob: r.dob,
       admission_date: todayISO(), parent_name: r.parent_name, parent_phone: r.parent_phone,
       fee_category: 'new', status: 'active', student_id: studentId,
+      admission_form_number: r.admission_form_number || null,   // the applicant's number carries over; if none, the database issues one
     });
     if (error) throw error;
     await sb.from('admissions').update({ status: 'Enrolled' }).eq('id', id);
@@ -3741,6 +3795,12 @@ const CCE_STAFF_COLUMNS = [
   { key:'address', label:'Address' }, { key:'emergency_contact_name', label:'Emergency Contact' },
   { key:'emergency_contact_relationship', label:'Emergency Contact Relationship' }, { key:'emergency_contact_phone', label:'Emergency Contact Phone' },
 ];
+function irTypeChange(){
+  indivReportState.type = document.getElementById('ir_type').value;
+  const f = document.getElementById('ir_from'), t = document.getElementById('ir_to');
+  if (f && f.value) indivReportState.from = f.value; if (t && t.value) indivReportState.to = t.value;
+  renderTabAsync();
+}
 async function printIndividualReport(){
   const type = document.getElementById('ir_type').value;
   const personId = document.getElementById('ir_person').value;
@@ -3813,8 +3873,277 @@ async function exportCustomColumns(format){
   </table>`, `${kind==='students'?'Students':'Staff'} Export`);
 }
 
+// =====================================================================
+// SCHOLARSHIPS + FEE HISTORY (release r29)
+// A scholarship is a percentage taken off the TUITION line only. Everything else is still due.
+// Only people with "View fees" see the bare percentage; names, lists and history need
+// "manage_scholarships" / "view_fee_reports" (Proprietor by default). Needs SQL file 38; without it
+// nothing here appears and the fee screens behave exactly as before.
+// =====================================================================
+let FEE_PCT = {}, FEE_PCT_AT = 0;
+async function ensureFeePct(force){
+  if (ACCESS_MODE !== 'rbac') { FEE_PCT = {}; return; }
+  if (!force && Date.now() - FEE_PCT_AT < 20000) return;
+  try {
+    const { data, error } = await sb.rpc('student_fee_percents'); if (error) throw error;
+    FEE_PCT = {}; (data || []).forEach(r => { FEE_PCT[r.student_id] = Number(r.percent) || 0; });
+  } catch(e) { FEE_PCT = {}; }
+  FEE_PCT_AT = Date.now();
+}
+function tuitionOf(classId, cat){ return Number(expectedFeeItems(classId, cat).Tuition || 0); }
+function scholarshipDiscountFor(s){ const p = Number(FEE_PCT[s.id] || 0); return p > 0 ? Math.round(tuitionOf(s.class_id, s.fee_category) * p / 100) : 0; }
+function expectedFeeFor(s){ return expectedFeeTotal(s.class_id, s.fee_category) - scholarshipDiscountFor(s); }
+function canFeeReports(){ return ACCESS_MODE === 'rbac' && hasPerm('view_fee_reports'); }
+function canScholarships(){ return ACCESS_MODE === 'rbac' && hasPerm('manage_scholarships'); }
+
+// Freeze what each pupil owes for the current term (so later changes never rewrite an old term)
+let FEE_SYNC_AT = 0;
+async function syncFeeAssessments(force){
+  if (ACCESS_MODE !== 'rbac') return false;
+  if (!(hasPerm('view_fees') || hasPerm('view_fee_reports') || hasPerm('manage_school_settings'))) return false;
+  if (!force && Date.now() - FEE_SYNC_AT < 60000) return true;
+  FEE_SYNC_AT = Date.now();
+  try {
+    await loadSettings(); const term = SETTINGS_CACHE.current_term; if (!term) return false;
+    await ensureFeePct(true);
+    const students = (await fetchEveryRow('students', 'id,class_id,fee_category,status')).filter(isActiveStudent);
+    const schol = {};
+    if (hasPerm('view_fee_reports') || hasPerm('manage_scholarships')) {
+      try { (await fetchEveryRow('student_scholarships', 'id,student_id,scholarship_id')).forEach(r => { schol[r.student_id] = r.scholarship_id; }); } catch(e) {}
+    }
+    const rows = students.map(s => ({ student_id: s.id, class_id: s.class_id, fee_category: s.fee_category, scholarship_id: schol[s.id] || null,
+      scholarship_percent: FEE_PCT[s.id] || 0, tuition: tuitionOf(s.class_id, s.fee_category), discount: scholarshipDiscountFor(s), expected: expectedFeeFor(s) }));
+    for (let i = 0; i < rows.length; i += 300) {
+      const { error } = await sb.rpc('fee_assessments_save', { p_term: term, p_rows: rows.slice(i, i + 300) });
+      if (error) throw error;
+    }
+    return true;
+  } catch(e) { FEE_SYNC_AT = 0; return false; }
+}
+
+// One read of everything the fee reports and dashboard tiles need
+let FEE_BOOK = null, FEE_BOOK_AT = 0;
+function feeStatusOf(exp, paid){ return exp <= 0 || paid >= exp ? 'paid' : (paid > 0 ? 'part' : 'none'); }
+const FEE_STATUS_LABEL = { paid: 'Fully paid', part: 'Part-paid', none: 'Not paid at all' };
+async function feeBook(force){
+  if (!force && FEE_BOOK && Date.now() - FEE_BOOK_AT < 20000) return FEE_BOOK;
+  await loadSettings(); await ensureFeePct(force); await syncFeeAssessments(false);
+  const term = SETTINGS_CACHE.current_term || '';
+  const [stu, pay, asm, schRes, ssRes] = await Promise.all([
+    fetchEveryRow('students', 'id,name,student_id,class_id,fee_category,status,parent_phone'),
+    fetchEveryRow('fee_payments', 'id,student_id,term,amount,date,receipt_no,method'),
+    fetchEveryRow('fee_assessments', '*').catch(() => []),
+    sb.from('scholarships').select('*').order('sort'),
+    fetchEveryRow('student_scholarships', 'id,student_id,scholarship_id').catch(() => []),
+  ]);
+  const schById = {}; (schRes.data || []).forEach(x => { schById[x.id] = x; });
+  const schOf = {}; (ssRes || []).forEach(r => { if (schById[r.scholarship_id]) schOf[r.student_id] = schById[r.scholarship_id]; });
+  const byId = {}; stu.forEach(s => { byId[s.id] = s; });
+  const paid = {}; pay.forEach(p => { ((paid[p.student_id] = paid[p.student_id] || {})[p.term] = ((paid[p.student_id] || {})[p.term] || 0) + Number(p.amount)); });
+  const paidIn = (sid, t) => (paid[sid] && paid[sid][t]) || 0;
+  const cur = stu.filter(isActiveStudent).map(s => {
+    const exp = expectedFeeFor(s), pd = paidIn(s.id, term);
+    return { s, term, exp, paid: pd, bal: Math.max(exp - pd, 0), status: feeStatusOf(exp, pd), sch: schOf[s.id] || null,
+             tuition: tuitionOf(s.class_id, s.fee_category), disc: scholarshipDiscountFor(s) };
+  });
+  const prev = (asm || []).filter(a => a.term !== term && byId[a.student_id]).map(a => {
+    const pd = paidIn(a.student_id, a.term), exp = Number(a.expected);
+    return { s: byId[a.student_id], term: a.term, exp, paid: pd, bal: Math.max(exp - pd, 0), status: feeStatusOf(exp, pd), a };
+  });
+  const terms = [...new Set([term, ...(asm || []).map(a => a.term), ...pay.map(p => p.term)])].filter(Boolean);
+  FEE_BOOK = { term, cur, prev, asm: asm || [], pay, paidIn, byId, schOf, schools: schRes.data || [], schOk: !schRes.error, terms };
+  FEE_BOOK_AT = Date.now(); return FEE_BOOK;
+}
+function feeSummary(b){
+  const owe = b.cur.filter(r => r.bal > 0);
+  const prevOwe = b.prev.filter(r => r.bal > 0);
+  return { schol: b.cur.filter(r => r.sch).length, owe, none: owe.filter(r => r.status === 'none'), part: owe.filter(r => r.status === 'part'),
+           prevOwe, prevStudents: new Set(prevOwe.map(r => r.s.id)).size, prevTotal: prevOwe.reduce((a, r) => a + r.bal, 0) };
+}
+const classOrder = id => { const i = CLASSES.findIndex(c => c.id === id); return i < 0 ? 99 : i; };
+const sortFeeRows = rows => [...rows].sort((a, b) => classOrder(a.s.class_id) - classOrder(b.s.class_id) || String(a.s.name || '').localeCompare(b.s.name || '') || String(a.term).localeCompare(String(b.term)));
+
+// ---------- dashboard tiles ----------
+async function feeFollowUpPanel(){
+  if (!canFeeReports() || !SETTINGS_CACHE.current_term) return '';
+  let b; try { b = await feeBook(); } catch(e) { return ''; }
+  if (!b.schOk) return `<div class="panel"><h2>Fee Follow-up &amp; Scholarships</h2><div class="desc">Run SQL file 38 in Supabase to switch this on.</div></div>`;
+  const m = feeSummary(b);
+  return `<div class="panel">
+    <h2>Fee Follow-up &amp; Scholarships</h2>
+    <div class="desc">${esc(b.term)} &middot; click a tile to see the full list. Visible only to people allowed to see fee reports.</div>
+    <div class="kpis">
+      <div class="kpi clickable" onclick="dashOpen('feeSchol')"><div class="label">Students on Scholarship</div><div class="value">${m.schol}</div></div>
+      <div class="kpi clickable" onclick="dashOpen('feeOwe')"><div class="label">Owing This Term</div><div class="value" style="color:${m.owe.length?'var(--bad)':'var(--ok)'};">${m.owe.length}</div><div class="note">${m.none.length} not paid at all &middot; ${m.part.length} part-paid</div></div>
+      <div class="kpi clickable" onclick="dashOpen('feePart')"><div class="label">Part-payment This Term</div><div class="value" style="color:var(--warn);">${m.part.length}</div></div>
+      <div class="kpi clickable" onclick="dashOpen('feePrev')"><div class="label">Owing From Earlier Terms</div><div class="value" style="color:${m.prevStudents?'var(--bad)':'var(--ok)'};">${m.prevStudents}</div><div class="note">${naira(m.prevTotal)} outstanding</div></div>
+    </div>
+  </div>`;
+}
+async function feeDashDetail(k){
+  const b = await feeBook(true); const m = feeSummary(b);
+  const row = (r, showTerm) => `<tr class="dclick" data-s="${esc(((r.s.name||'')+' '+(r.s.student_id||'')+' '+(classById(r.s.class_id)?.name||'')).toLowerCase())}" onclick="dashGoStudent('${r.s.id}')"><td>${esc(r.s.name)}</td><td>${esc(classById(r.s.class_id)?.name||'')}</td>${showTerm?`<td>${esc(r.term)}</td>`:''}<td class="right mono">${naira(r.exp)}</td><td class="right mono">${naira(r.paid)}</td><td class="right mono" style="color:var(--bad);">${naira(r.bal)}</td><td>${FEE_STATUS_LABEL[r.status]}</td></tr>`;
+  const head = (t) => ['Name','Class', ...(t?['Term']:[]), 'Expected','Paid','Balance','Status'];
+  const right = h => h.replace(/<th>(Expected|Paid|Balance)<\/th>/g, '<th class="right">$1</th>');
+  if (k === 'feeSchol') {
+    const list = sortFeeRows(b.cur.filter(r => r.sch));
+    const rows = list.map(r => `<tr class="dclick" data-s="${esc(((r.s.name||'')+' '+(r.sch.name||'')).toLowerCase())}" onclick="dashGoStudent('${r.s.id}')"><td>${esc(r.s.name)}</td><td>${esc(classById(r.s.class_id)?.name||'')}</td><td>${esc(r.sch.name)}</td><td class="right mono">${r.sch.percent ?? '—'}%</td><td class="right mono">${naira(r.disc)}</td><td class="right mono">${naira(r.bal)}</td></tr>`).join('');
+    return { title: `Students on scholarship &mdash; ${list.length}`, sub: 'Click a pupil to open the record.', controls: dashSearchBox(), body: right(dtable(['Name','Class','Scholarship','% off tuition','Tuition saved','Balance'], rows, 'No student has a scholarship yet.')), go: ['reports','Open Reports'] };
+  }
+  const pick = { feeOwe: m.owe, feePart: m.part }[k];
+  if (pick) {
+    const list = sortFeeRows(pick);
+    return { title: `${k === 'feeOwe' ? 'Owing this term' : 'Part-payment this term'} &mdash; ${list.length}`, sub: `${esc(b.term)}. Click a pupil to open the record.`, controls: dashSearchBox(), body: right(dtable(head(false), list.map(r => row(r, false)).join(''), 'Nobody.')), go: ['reports','Open Reports'] };
+  }
+  const list = sortFeeRows(m.prevOwe);
+  return { title: `Owing from earlier terms &mdash; ${m.prevStudents} pupil(s), ${naira(m.prevTotal)}`, sub: 'From the fees frozen at the end of each earlier term. Click a pupil to open the record.', controls: dashSearchBox(), body: right(dtable(head(true), list.map(r => row(r, true)).join(''), 'Nobody owes fees from an earlier term.')), go: ['reports','Open Reports'] };
+}
+
+// ---------- the three reports ----------
+let feeRepState = { kind: 'outstanding', classId: 'ALL', term: '' };
+function feeRepRows(b, st){
+  let rows;
+  if (st.kind === 'outstanding') rows = [...b.cur.filter(r => r.bal > 0).map(r => Object.assign({ when: 'This term' }, r)), ...b.prev.filter(r => r.bal > 0).map(r => Object.assign({ when: 'Earlier term' }, r))];
+  else if (st.kind === 'paid') { const t = st.term || b.term; rows = (t === b.term ? b.cur : b.prev.filter(r => r.term === t)).filter(r => r.status === 'paid').map(r => Object.assign({ when: t === b.term ? 'This term' : 'Earlier term' }, r)); }
+  else rows = b.cur.filter(r => r.sch).map(r => Object.assign({ when: 'This term' }, r));
+  if (st.classId !== 'ALL') rows = rows.filter(r => r.s.class_id === st.classId);
+  return sortFeeRows(rows);
+}
+function feeRepTable(b, st){
+  const rows = feeRepRows(b, st);
+  let head, body, foot = '';
+  const N = v => naira(v);
+  if (st.kind === 'scholarship') {
+    head = ['#','Name','Student ID','Class','Scholarship','% off','Normal tuition','Tuition saved','Total due','Paid','Balance'];
+    body = rows.map((r, i) => [i+1, r.s.name, r.s.student_id || '', classById(r.s.class_id)?.name || '', r.sch.name, (r.sch.percent ?? '') + '%', N(r.tuition), N(r.disc), N(r.exp), N(r.paid), N(r.bal)]);
+    foot = ['', 'TOTAL', '', '', '', '', '', N(rows.reduce((a, r) => a + r.disc, 0)), N(rows.reduce((a, r) => a + r.exp, 0)), N(rows.reduce((a, r) => a + r.paid, 0)), N(rows.reduce((a, r) => a + r.bal, 0))];
+  } else {
+    head = ['#','Name','Student ID','Class','Term','Expected','Paid','Balance','Status','Parent phone'];
+    body = rows.map((r, i) => [i+1, r.s.name, r.s.student_id || '', classById(r.s.class_id)?.name || '', r.term, N(r.exp), N(r.paid), N(r.bal), FEE_STATUS_LABEL[r.status], r.s.parent_phone || '']);
+    foot = ['', 'TOTAL', '', '', '', N(rows.reduce((a, r) => a + r.exp, 0)), N(rows.reduce((a, r) => a + r.paid, 0)), N(rows.reduce((a, r) => a + r.bal, 0)), '', ''];
+  }
+  const title = { outstanding: 'Outstanding Fees (this term and earlier terms)', paid: `Fully Paid Fees — ${st.term || b.term}`, scholarship: `Students on Scholarship — ${b.term}` }[st.kind];
+  return { rows, head, body, foot, title: title + (st.classId !== 'ALL' ? ' — ' + (classById(st.classId)?.name || '') : '') };
+}
+async function generateFeeReport(mode){
+  const b = await feeBook(true); const t = feeRepTable(b, feeRepState);
+  if (mode === 'csv') {
+    const csv = [t.head, ...t.body, t.foot].map(r => r.map(c => `"${String(c ?? '').replace(/"/g,'""')}"`).join(',')).join('\r\n');
+    downloadCSVText(csv, 'shishenri_' + feeRepState.kind + '_report.csv'); return;
+  }
+  if (!t.rows.length) { toast('Nothing to list for this report.'); return; }
+  const cell = 'border:1px solid #ccc;padding:5px;';
+  printHTML(`<div style="font-family:Inter,sans-serif;font-size:12px;"><p style="color:#555;">${t.rows.length} record(s). Printed ${new Date().toLocaleDateString('en-NG')}.</p>
+    <table style="width:100%;border-collapse:collapse;"><tr style="background:#16345E;color:#fff;">${t.head.map(h => `<th style="padding:5px;text-align:left;">${esc(h)}</th>`).join('')}</tr>
+    ${t.body.map(r => `<tr>${r.map(c => `<td style="${cell}">${esc(String(c))}</td>`).join('')}</tr>`).join('')}
+    <tr style="font-weight:700;background:#f3f1ea;">${t.foot.map(c => `<td style="${cell}">${esc(String(c))}</td>`).join('')}</tr></table></div>`, t.title);
+}
+async function feeReportsPanel(){
+  if (!canFeeReports()) return '';
+  let b; try { b = await feeBook(); } catch(e) { return `<div class="panel"><h2>Fee &amp; Scholarship Reports</h2><div class="empty" style="color:var(--bad);">Could not load: ${esc(e.message)}</div></div>`; }
+  if (!b.schOk) return `<div class="panel"><h2>Fee &amp; Scholarship Reports</h2><div class="desc">Run SQL file 38 in Supabase to switch these reports on.</div></div>`;
+  if (!feeRepState.term) feeRepState.term = b.term;
+  const t = feeRepTable(b, feeRepState);
+  return `<div class="panel">
+    <h2>Fee &amp; Scholarship Reports</h2>
+    <div class="desc">Outstanding fees (this term and earlier terms), fully paid, and scholarship students. Only people allowed to see fee reports can open this.</div>
+    <div class="row" style="margin-bottom:10px;">
+      <select onchange="feeRepState.kind=this.value;renderTabAsync();">
+        <option value="outstanding" ${feeRepState.kind==='outstanding'?'selected':''}>Outstanding fees (current + past terms)</option>
+        <option value="paid" ${feeRepState.kind==='paid'?'selected':''}>Fully paid fees</option>
+        <option value="scholarship" ${feeRepState.kind==='scholarship'?'selected':''}>Students on scholarship</option>
+      </select>
+      <select onchange="feeRepState.classId=this.value;renderTabAsync();"><option value="ALL">All classes</option>${CLASSES.map(c=>`<option value="${c.id}" ${feeRepState.classId===c.id?'selected':''}>${c.name}</option>`).join('')}</select>
+      ${feeRepState.kind==='paid' ? `<select onchange="feeRepState.term=this.value;renderTabAsync();">${b.terms.map(x=>`<option ${feeRepState.term===x?'selected':''}>${esc(x)}</option>`).join('')}</select>` : ''}
+      <span class="desc" style="margin:0;"><strong>${t.rows.length}</strong> record(s)</span>
+    </div>
+    <div class="row">
+      <button class="btn small" onclick="generateFeeReport('preview')">Preview / Word / PDF</button>
+      <button class="btn small secondary" onclick="generateFeeReport('csv')">Export CSV</button>
+    </div>
+  </div>`;
+}
+
+// ---------- fee history on a student's profile ----------
+async function studentFeeHistoryPanel(s){
+  if (!canFeeReports()) return '';
+  let b; try { b = await feeBook(); } catch(e) { return ''; }
+  if (!b.schOk) return '';
+  const sch = b.schOf[s.id];
+  const asmBy = {}; b.asm.filter(a => a.student_id === s.id).forEach(a => { asmBy[a.term] = a; });
+  const pays = b.pay.filter(p => p.student_id === s.id).sort((x, y) => String(y.date).localeCompare(String(x.date)));
+  const termsSet = [...new Set([b.term, ...Object.keys(asmBy), ...pays.map(p => p.term)])].filter(Boolean);
+  const rows = termsSet.map(t => {
+    const live = t === b.term; const a = asmBy[t];
+    const exp = live ? expectedFeeFor(s) : (a ? Number(a.expected) : null);
+    const pd = b.paidIn(s.id, t);
+    const bal = exp == null ? null : Math.max(exp - pd, 0);
+    const st = exp == null ? null : feeStatusOf(exp, pd);
+    const pct = live ? (FEE_PCT[s.id] || 0) : (a ? Number(a.scholarship_percent || 0) : 0);
+    return { t, live, exp, pd, bal, st, pct };
+  });
+  const owed = rows.reduce((x, r) => x + (r.bal || 0), 0), paidAll = rows.reduce((x, r) => x + r.pd, 0);
+  const never = rows.filter(r => r.exp != null && r.exp > 0 && r.pd === 0).length;
+  return `<div class="panel">
+    <h2>Fees History</h2>
+    <div class="desc">Every term, from now back to the first term on record. ${sch ? `Scholarship: <strong>${esc(sch.name)}</strong> (${sch.percent}% off tuition).` : 'No scholarship.'} Visible only to people allowed to see fee reports.</div>
+    <div class="tablewrap"><table>
+      <tr><th>Term</th><th class="right">Expected</th><th class="right">Paid</th><th class="right">Outstanding</th><th>Status</th><th></th></tr>
+      ${rows.map(r => `<tr><td>${esc(r.t)}${r.live ? ' <span class="pill ok">current</span>' : ''}${r.pct ? ` <span class="pill warn">${r.pct}% scholarship</span>` : ''}</td>
+        <td class="right mono">${r.exp == null ? '—' : naira(r.exp)}</td><td class="right mono">${naira(r.pd)}</td>
+        <td class="right mono" style="color:${r.bal > 0 ? 'var(--bad)' : 'var(--ok)'};">${r.bal == null ? '—' : naira(r.bal)}</td>
+        <td>${r.st ? FEE_STATUS_LABEL[r.st] : '<span class="desc" style="margin:0;">before fee tracking began</span>'}</td>
+        <td class="right">${r.bal > 0 && hasPerm('record_payment') ? `<button class="btn small secondary" onclick="openPaymentForm('${s.id}','${esc(r.t).replace(/'/g,'&#39;')}')">Record payment</button>` : ''}</td></tr>`).join('')}
+      <tr style="font-weight:700;"><td>Total</td><td></td><td class="right mono">${naira(paidAll)}</td><td class="right mono" style="color:${owed > 0 ? 'var(--bad)' : 'var(--ok)'};">${naira(owed)}</td><td colspan="2">${never ? `<span style="color:var(--bad);">${never} term(s) with nothing paid</span>` : ''}</td></tr>
+    </table></div>
+    ${pays.length ? `<h3 style="font-size:13px;margin:14px 0 6px;">Every payment</h3><div class="tablewrap"><table>
+      <tr><th>Date</th><th>Term</th><th>Receipt No.</th><th>Method</th><th class="right">Amount</th></tr>
+      ${pays.map(p => `<tr><td class="mono">${esc(p.date)}</td><td>${esc(p.term)}</td><td class="mono">${esc(p.receipt_no || '—')}</td><td>${esc(p.method || '')}</td><td class="right mono">${naira(p.amount)}</td></tr>`).join('')}
+    </table></div>` : '<div class="desc">No payment has been recorded for this pupil yet.</div>'}
+  </div>`;
+}
+
+// ---------- Settings: scholarships ----------
+async function scholarshipSettingsPanel(){
+  if (!canScholarships()) return '';
+  const { data, error } = await sb.from('scholarships').select('*').order('sort');
+  if (error) return `<div class="panel"><h2>Scholarships</h2><div class="desc">Run SQL file 38 in Supabase to switch scholarships on.</div></div>`;
+  const { data: ss } = await sb.from('student_scholarships').select('scholarship_id');
+  const cnt = {}; (ss || []).forEach(r => { cnt[r.scholarship_id] = (cnt[r.scholarship_id] || 0) + 1; });
+  return `<div class="panel">
+    <h2>Scholarships</h2>
+    <div class="desc">Write what each scholarship is for, and the percentage of <strong>tuition</strong> it covers. Once a percentage is saved, any pupil given that scholarship (new enrolment or returning) automatically has that much taken off their tuition. Exam fee, PTA dues and other items are still due. Past terms are never changed.</div>
+    ${data.map(x => `<div class="field" style="border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;">
+      <label style="font-size:14px;"><strong>${esc(x.name)}</strong> <span class="desc" style="margin:0;">&middot; ${cnt[x.id] || 0} pupil(s) now on it</span></label>
+      <textarea id="sch_d_${x.id}" rows="2" placeholder="Description - who qualifies and why">${esc(x.description || '')}</textarea>
+      <div class="row" style="margin-top:8px;align-items:center;">
+        <label class="desc" style="margin:0;">Percentage of tuition given (0-100) <input id="sch_p_${x.id}" type="number" min="0" max="100" step="0.01" value="${x.percent ?? ''}" style="width:90px;display:inline-block;"> %</label>
+        <button class="btn small" onclick="saveScholarship('${x.id}', ${cnt[x.id] || 0})">Save ${esc(x.name)}</button>
+      </div>
+    </div>`).join('')}
+  </div>`;
+}
+async function saveScholarship(id, n){
+  const pRaw = document.getElementById('sch_p_' + id).value.trim();
+  const pct = pRaw === '' ? null : Number(pRaw);
+  if (pct != null && (isNaN(pct) || pct < 0 || pct > 100)) { toast('The percentage must be between 0 and 100.'); return; }
+  const desc = document.getElementById('sch_d_' + id).value;
+  if (n > 0 && !confirm(`${n} pupil(s) are on this scholarship. Saving changes what they owe THIS term (earlier terms stay as they were). Continue?`)) return;
+  try {
+    const { data, error } = await sb.rpc('scholarship_save', { p_id: id, p_description: desc, p_percent: pct });
+    if (error) throw error;
+    const { data: chk } = await sb.from('scholarships').select('percent,description').eq('id', id).maybeSingle();
+    if (!chk || Number(chk.percent ?? -1) !== Number(pct ?? -1)) throw new Error('The database did not keep the change. Nothing was saved.');
+    FEE_PCT_AT = 0; FEE_BOOK = null; await syncFeeAssessments(true);
+    toast('Saved. ' + (pct == null ? 'No percentage set yet.' : pct + '% of tuition.') + (n ? ` ${n} pupil(s) affected this term.` : ''));
+    renderTabAsync();
+  } catch(e) { toast('Could not save: ' + (/function .* does not exist|schema cache/i.test(e.message) ? 'run SQL file 38 first.' : e.message)); }
+}
+
 async function renderReports(){
+  const feeRepHtml = await feeReportsPanel();
   return `
+  ${feeRepHtml}
   <div class="panel">
     <h2>Daily Management Report</h2>
     <div class="desc">One printable page: enrolment, attendance, fees, discipline, safeguarding, facilities.</div>
@@ -3854,7 +4183,7 @@ async function renderReports(){
     <h2>Individual Report</h2>
     <div class="desc">Full history for one student or staff member over a date range — attendance, and for students, results.</div>
     <div class="row" style="margin-bottom:10px;">
-      <select id="ir_type" onchange="renderTabAsync();">
+      <select id="ir_type" onchange="irTypeChange()">
         <option value="student" ${indivReportState.type==='student'?'selected':''}>Student</option>
         <option value="staff" ${indivReportState.type==='staff'?'selected':''}>Staff</option>
       </select>
@@ -3931,7 +4260,7 @@ async function printClassList(classId){
   </table>`, `Class List — ${classById(classId)?.name}`);
 }
 async function printFeeStatement(classId){
-  await loadSettings();
+  await loadSettings(); await ensureFeePct();
   const term = SETTINGS_CACHE.current_term;
   const { data: students } = await sb.from('students').select('*');
   let roster = (students||[]).filter(isActiveStudent);
@@ -3940,7 +4269,7 @@ async function printFeeStatement(classId){
   const { data: payments } = ids.length ? await sb.from('fee_payments').select('*').in('student_id',ids).eq('term',term) : {data:[]};
   const paidBy = {}; (payments||[]).forEach(p=>{ paidBy[p.student_id]=(paidBy[p.student_id]||0)+Number(p.amount); });
   const rows = roster.map(s=>{
-    const expected = expectedFeeTotal(s.class_id, s.fee_category);
+    const expected = expectedFeeFor(s);
     const paid = paidBy[s.id]||0;
     return `<tr><td style="border:1px solid #ccc;padding:6px;">${esc(s.name)}</td><td style="border:1px solid #ccc;padding:6px;">${classById(s.class_id)?.name}</td><td style="border:1px solid #ccc;padding:6px;text-align:right;">${naira(expected)}</td><td style="border:1px solid #ccc;padding:6px;text-align:right;">${naira(paid)}</td><td style="border:1px solid #ccc;padding:6px;text-align:right;">${naira(Math.max(expected-paid,0))}</td></tr>`;
   }).join('');
@@ -3957,7 +4286,7 @@ async function printDailyManagementReport(){
   const ids = active.map(s=>s.id);
   const { data: payments } = ids.length ? await sb.from('fee_payments').select('amount').in('student_id',ids).eq('term',term) : {data:[]};
   const collected = (payments||[]).reduce((a,p)=>a+Number(p.amount),0);
-  let expected = 0; active.forEach(s=>expected+=expectedFeeTotal(s.class_id,s.fee_category));
+  await ensureFeePct(); let expected = 0; active.forEach(s=>expected+=expectedFeeFor(s));
   const today = todayISO();
   const { data: todayAtt } = await sb.from('attendance').select('status').eq('date', today);
   const present = (todayAtt||[]).filter(r=>r.status==='P').length, absent=(todayAtt||[]).filter(r=>r.status==='A').length, late=(todayAtt||[]).filter(r=>r.status==='L').length, marked=(todayAtt||[]).length;
