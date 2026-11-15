@@ -414,7 +414,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r30'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r31'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -859,8 +859,8 @@ async function renderDashboard(){
     active.forEach(s => feeExpected += expectedFeeFor(s));
     const ids = active.map(s=>s.id);
     if (ids.length) {
-      const { data: payments } = await sb.from('fee_payments').select('amount').in('student_id', ids).eq('term', term);
-      feeCollected = (payments||[]).reduce((a,p)=>a+Number(p.amount),0);
+      const { data: payments } = await sb.from('fee_payments').select('*').in('student_id', ids).eq('term', term);
+      feeCollected = (payments||[]).filter(inCurPeriod).reduce((a,p)=>a+Number(p.amount),0);
     }
   }
   const feePct = feeExpected ? Math.round((feeCollected/feeExpected)*100) : 0;
@@ -1086,8 +1086,8 @@ async function dashBody(){
   if (k === 'fees') {
     const term = SETTINGS_CACHE.current_term; await ensureFeePct();
     const { data: sd } = await sb.from('students').select('id,class_id,fee_category,status'); const act = (sd || []).filter(isActiveStudent);
-    const { data: pay } = act.length ? await sb.from('fee_payments').select('student_id,amount').in('student_id', act.map(s => s.id)).eq('term', term) : { data: [] };
-    const paid = {}; (pay || []).forEach(p => { paid[p.student_id] = (paid[p.student_id] || 0) + Number(p.amount); });
+    const { data: pay } = act.length ? await sb.from('fee_payments').select('*').in('student_id', act.map(s => s.id)).eq('term', term) : { data: [] };
+    const paid = {}; (pay || []).filter(inCurPeriod).forEach(p => { paid[p.student_id] = (paid[p.student_id] || 0) + Number(p.amount); });
     let te = 0, tc = 0;
     const rows = CLASSES.map(c => { const ss = act.filter(s => s.class_id === c.id); if (!ss.length) return '';
       const exp = ss.reduce((a, s) => a + expectedFeeFor(s), 0), col = ss.reduce((a, s) => a + (paid[s.id] || 0), 0); te += exp; tc += col;
@@ -2336,7 +2336,7 @@ async function saveTerm(){
   if (document.getElementById('set_termstart')) payload.term_start_date = document.getElementById('set_termstart').value || null;
   if (termNumber === 3) payload.third_term_label = val; // remembered so next session's promotion knows which results to use
   try {
-    if (ACCESS_MODE === 'rbac' && SETTINGS_CACHE.current_term && SETTINGS_CACHE.current_term !== val) {
+    if (ACCESS_MODE === 'rbac' && SETTINGS_CACHE.current_term && (SETTINGS_CACHE.current_term !== val || (normSession(prevSession) && normSession(prevSession) !== normSession(payload.session_label)))) {
       const ok = await syncFeeAssessments(true);   // freeze what everyone owed for the term that is ending
       if (!ok) toast('Note: the fees for the ending term could not be frozen (SQL file 38 not installed, or no fee access). Earlier-term balances will not be tracked for it.');
     }
@@ -3062,7 +3062,7 @@ async function renderFees(){
   let payments = [];
   if (ids.length) {
     const { data } = await sb.from('fee_payments').select('*').in('student_id', ids).eq('term', term);
-    payments = data || [];
+    payments = (data || []).filter(inCurPeriod);
   }
   const paidByStudent = {};
   payments.forEach(p => { paidByStudent[p.student_id] = (paidByStudent[p.student_id]||0) + Number(p.amount); });
@@ -3082,7 +3082,7 @@ async function renderFees(){
         <option value="ALL">All ${isScopedRole('fees')?'My':''} Classes</option>
         ${myClasses.map(c=>`<option value="${c.id}" ${feesState.classId===c.id?'selected':''}>${c.name}</option>`).join('')}
       </select>
-      <span class="desc" style="margin:0;">Term: <strong>${esc(term)}</strong> · Expected ${naira(totalExpected)} · Collected ${naira(totalCollected)}</span>
+      <span class="desc" style="margin:0;">Term: <strong>${esc(curPeriod())}</strong> · Expected ${naira(totalExpected)} · Collected ${naira(totalCollected)}</span>
     </div>
     ${rows.length===0 ? `<div class="empty">No pupils match.</div>` : `
     <div class="tablewrap"><table>
@@ -3096,28 +3096,35 @@ async function renderFees(){
     </table></div>`}
   </div>`;
 }
-async function openPaymentForm(studentId, termArg){
+const PAY_TERM_NAMES = ['First Term', 'Second Term', 'Third Term'];
+async function openPaymentForm(studentId, periodArg){
   const { data: s } = await sb.from('students').select('*').eq('id', studentId).maybeSingle();
   if (!s) return;
-  await ensureFeePct();
-  const curTerm = SETTINGS_CACHE.current_term; const term = termArg || curTerm;
-  let expected = expectedFeeFor(s), termOptions = [curTerm];
-  if (term !== curTerm || canFeeReports()) {
-    try {
-      const { data: asm } = await sb.from('fee_assessments').select('term,expected').eq('student_id', studentId);
-      const { data: pp } = await sb.from('fee_payments').select('term,amount').eq('student_id', studentId);
-      const pd = {}; (pp||[]).forEach(x => { pd[x.term] = (pd[x.term]||0) + Number(x.amount); });
-      (asm||[]).filter(a => a.term !== curTerm && (Number(a.expected) - (pd[a.term]||0) > 0 || a.term === term)).forEach(a => termOptions.push(a.term));
-      if (term !== curTerm) { const a = (asm||[]).find(x => x.term === term); expected = a ? Number(a.expected) : 0; }
-    } catch(e) {}
-  }
-  if (!termOptions.includes(term)) termOptions.push(term);
-  const { data: payments } = await sb.from('fee_payments').select('*').eq('student_id', studentId).eq('term', term).order('date', { ascending: false });
-  const paid = (payments||[]).reduce((a,p)=>a+Number(p.amount),0);
+  await loadSettings(); await ensureFeePct();
+  const cur = curPeriod();
+  const want = periodArg || cur;
+  const selTerm = termName(want) || termName(cur), selSess = normSession(want) || curSession();
+  const period = periodLabel(selTerm, selSess);
+  const isCur = period.toLowerCase() === cur.toLowerCase();
+  let asm = [], pp = [];
+  try { const r = await sb.from('fee_assessments').select('*').eq('student_id', studentId); asm = r.data || []; } catch(e) {}
+  try { const r = await sb.from('fee_payments').select('*').eq('student_id', studentId); pp = r.data || []; } catch(e) {}
+  const payments = pp.filter(x => rowPeriod(x).toLowerCase() === period.toLowerCase()).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const paid = payments.reduce((a, p) => a + Number(p.amount), 0);
+  let expected = 0, known = false;
+  if (isCur) { expected = expectedFeeFor(s); known = true; }
+  else { const a = asm.find(x => rowPeriod(x).toLowerCase() === period.toLowerCase()); if (a) { expected = Number(a.expected); known = true; } }
+  const termOpts = [...new Set([...PAY_TERM_NAMES, termName(cur), selTerm])].filter(Boolean);
+  const sessOpts = [...new Set([prevSessionOf(curSession()), curSession(), nextSessionOf(curSession()), ...asm.map(rowSession), ...pp.map(rowSession), selSess])].filter(Boolean).sort();
+  const sch = (a) => esc(a).replace(/'/g, '&#39;');
   openModal(`
     <h3>Record Payment — ${esc(s.name)}</h3>
-    <div class="msub">${classById(s.class_id)?.name} · ${esc(term)} · Expected ${naira(expected)} · Paid so far ${naira(paid)}${term!==curTerm?' · <strong>an earlier term</strong>':''}</div>
-    ${termOptions.length>1 ? `<div class="field"><label>Payment is for term</label><select id="pay_term" onchange="openPaymentForm('${studentId}', this.value)">${termOptions.map(t=>`<option value="${esc(t)}" ${t===term?'selected':''}>${esc(t)}${t===curTerm?' (current)':' (still owing)'}</option>`).join('')}</select></div>` : `<input type="hidden" id="pay_term" value="${esc(term)}">`}
+    <div class="msub">${classById(s.class_id)?.name} · <strong>${esc(period)}</strong> · ${known ? 'Expected ' + naira(expected) + ' · ' : 'No fee record for this term · '}Paid so far ${naira(paid)}${isCur ? '' : ' · <strong>not the current term</strong>'}</div>
+    <div class="fgrid">
+      <div class="field"><label>Fee is for Term *</label><select id="pay_term" onchange="openPaymentForm('${studentId}', periodLabel(this.value, document.getElementById('pay_session').value))">${termOpts.map(t=>`<option value="${sch(t)}" ${t===selTerm?'selected':''}>${esc(t)}</option>`).join('')}</select></div>
+      <div class="field"><label>Academic Session *</label><select id="pay_session" onchange="openPaymentForm('${studentId}', periodLabel(document.getElementById('pay_term').value, this.value))">${sessOpts.map(t=>`<option value="${sch(t)}" ${t===selSess?'selected':''}>${esc(t)}${t===curSession()?' (current)':''}</option>`).join('')}</select></div>
+    </div>
+    ${known ? '' : `<div class="desc" style="color:var(--warn);">There is no fee record for ${esc(period)}. You can still record the payment; it will be filed under that term and session.</div>`}
     <div class="fgrid">
       <div class="field"><label>Amount (₦) *</label><input id="pay_amount" type="number"></div>
       <div class="field"><label>Date *</label><input id="pay_date" type="date" value="${todayISO()}"></div>
@@ -3130,14 +3137,14 @@ async function openPaymentForm(studentId, termArg){
     <h3 style="font-size:13px;margin:16px 0 4px;">Requirements <span style="font-weight:400;color:var(--grey);">(items to bring — not part of fees)</span></h3>
     <div style="margin-bottom:6px;">
       ${(REQUIREMENTS[feeSectionFor(s.class_id)]||[]).map(item => {
-        const met = !!(((s.requirements_met||{})[curTerm]||{})[item]);
+        const met = !!(((s.requirements_met||{})[SETTINGS_CACHE.current_term]||{})[item]);
         return `<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;"><input type="checkbox" style="width:auto;" ${met?'checked':''} onchange="toggleRequirement('${studentId}', this.dataset.item, this.checked)" data-item="${esc(item)}">${esc(item)}</label>`;
       }).join('')}
     </div>
-    <h3 style="font-size:13px;margin:16px 0 8px;">Payments for ${esc(term)}</h3>
+    <h3 style="font-size:13px;margin:16px 0 8px;">Payments for ${esc(period)}</h3>
     <div class="tablewrap"><table>
       <tr><th>Receipt No.</th><th>Date</th><th class="right">Amount</th><th>Method</th><th></th></tr>
-      ${(payments||[]).map(p=>`<tr><td class="mono">${esc(p.receipt_no||'—')}</td><td class="mono">${p.date}</td><td class="right mono">${naira(p.amount)}</td><td>${esc(p.method||'')}</td><td class="right"><button class="iconbtn" onclick="printReceipt('${p.id}')">Receipt</button></td></tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--grey);">None yet.</td></tr>'}
+      ${payments.map(p=>`<tr><td class="mono">${esc(p.receipt_no||'—')}</td><td class="mono">${p.date}</td><td class="right mono">${naira(p.amount)}</td><td>${esc(p.method||'')}</td><td class="right"><button class="iconbtn" onclick="printReceipt('${p.id}')">Receipt</button></td></tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--grey);">None yet.</td></tr>'}
     </table></div>
     <div class="mfoot">
       <button class="btn secondary" onclick="closeModal()">Close</button>
@@ -3154,37 +3161,54 @@ async function savePayment(studentId){
   if (!date) { toast('Choose a date.'); return; }
   btn.disabled = true; statusEl.textContent = 'Saving…';
   try {
-    const { data: ins, error } = await sb.from('fee_payments').insert({
-      student_id: studentId, term: (document.getElementById('pay_term')?.value || SETTINGS_CACHE.current_term), amount, date,
+    const pTerm = document.getElementById('pay_term')?.value || termName(SETTINGS_CACHE.current_term);
+    const pSess = document.getElementById('pay_session')?.value || curSession();
+    const period = periodLabel(pTerm, pSess);
+    // the current term keeps the exact label from Settings so older pages still match it
+    const storedTerm = period.toLowerCase() === curPeriod().toLowerCase() ? SETTINGS_CACHE.current_term : (termSession(SETTINGS_CACHE.current_term) ? period : pTerm);
+    const row = { student_id: studentId, term: storedTerm, amount, date,
       method: document.getElementById('pay_method').value,
       note: document.getElementById('pay_note').value.trim(),
-      recorded_by: MY_PROFILE?.name || 'Unknown',
-    }).select('receipt_no').maybeSingle();
+      recorded_by: MY_PROFILE?.name || 'Unknown' };
+    let { data: ins, error } = await sb.from('fee_payments').insert(Object.assign({ session: pSess }, row)).select('receipt_no').maybeSingle();
+    if (error && /session/i.test(error.message) && /column|schema cache/i.test(error.message)) {
+      if (pSess && pSess !== curSession()) throw new Error('Recording a payment for another session needs SQL file 39 to be run in Supabase first.');
+      ({ data: ins, error } = await sb.from('fee_payments').insert(row).select('receipt_no').maybeSingle());   // SQL 39 not run yet
+    }
     if (error) throw error;
-    await logAudit('create', 'fee_payments', studentId, { amount, date });
-    FEE_BOOK = null; toast('Payment recorded — Receipt ' + (ins?.receipt_no || '') + '.'); openPaymentForm(studentId, document.getElementById('pay_term')?.value); renderTabAsync();
+    await logAudit('create', 'fee_payments', studentId, { amount, date, term: pTerm, session: pSess });
+    FEE_BOOK = null; toast('Payment recorded for ' + period + ' — Receipt ' + (ins?.receipt_no || '') + '.'); openPaymentForm(studentId, period); renderTabAsync();
   } catch(e) { btn.disabled = false; statusEl.textContent = 'Could not save: ' + e.message; }
 }
+let receiptPeriod = '';
 async function renderReceipts(){
   await loadSettings();
   const term = SETTINGS_CACHE.current_term;
   if (!term) return `<div class="panel"><div class="empty">Set a Current Term in Settings first.</div></div>`;
-  const { data: payments, error } = await sb.from('fee_payments').select('*').eq('term', term).order('date', { ascending: false });
-  if (error) return `<div class="panel"><div class="empty" style="color:var(--bad);">Could not load receipts: ${esc(error.message)}</div></div>`;
-  const studentIds = [...new Set((payments||[]).map(p=>p.student_id))];
+  let all;
+  try { all = (await fetchEveryRow('fee_payments', '*')); } catch(e) { return `<div class="panel"><div class="empty" style="color:var(--bad);">Could not load receipts: ${esc(e.message)}</div></div>`; }
+  const cur = curPeriod();
+  const periods = [...new Set([cur, ...all.map(rowPeriod)])].filter(Boolean).sort((a, b) => termSortKey(b).localeCompare(termSortKey(a)));
+  if (!receiptPeriod || !periods.includes(receiptPeriod)) receiptPeriod = cur;
+  const payments = all.filter(p => rowPeriod(p) === receiptPeriod).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const studentIds = [...new Set(payments.map(p=>p.student_id))];
   let studentsById = {};
   if (studentIds.length) {
     const { data: students } = await sb.from('students').select('id,name,class_id').in('id', studentIds);
     (students||[]).forEach(s => { studentsById[s.id] = s; });
   }
+  const total = payments.reduce((a, p) => a + Number(p.amount), 0);
   return `
   <div class="panel">
-    <div class="desc">Every fee payment recorded this term (${esc(term)}).</div>
-    ${(!payments||payments.length===0) ? `<div class="empty">No payments recorded yet this term.</div>` : `
+    <div class="row between" style="margin-bottom:8px;">
+      <div class="desc" style="margin:0;">Fee payments recorded for: <select onchange="receiptPeriod=this.value;renderTabAsync();">${periods.map(x=>`<option value="${esc(x)}" ${x===receiptPeriod?'selected':''}>${esc(x)}${x===cur?' (current)':''}</option>`).join('')}</select></div>
+      <span class="desc" style="margin:0;">${payments.length} payment(s) &middot; ${naira(total)}</span>
+    </div>
+    ${(!payments||payments.length===0) ? `<div class="empty">No payments recorded for ${esc(receiptPeriod)}.</div>` : `
     <div class="tablewrap"><table>
-      <tr><th>Receipt No.</th><th>Date</th><th>Student</th><th>Class</th><th class="right">Amount</th><th>Method</th><th></th></tr>
+      <tr><th>Receipt No.</th><th>Date</th><th>Student</th><th>Class</th><th>Term &amp; Session</th><th class="right">Amount</th><th>Method</th><th></th></tr>
       ${payments.map(p => { const s = studentsById[p.student_id]; return `<tr>
-        <td class="mono">${esc(p.receipt_no||'—')}</td><td class="mono">${p.date}</td><td>${esc(s?.name||'—')}</td><td>${classById(s?.class_id)?.name||''}</td>
+        <td class="mono">${esc(p.receipt_no||'—')}</td><td class="mono">${p.date}</td><td>${esc(s?.name||'—')}</td><td>${classById(s?.class_id)?.name||''}</td><td>${esc(rowPeriod(p))}</td>
         <td class="right mono">${naira(p.amount)}</td><td>${esc(p.method||'')}</td>
         <td class="right"><button class="btn small ghost" onclick="printReceipt('${p.id}')">Print Receipt</button></td>
       </tr>`; }).join('')}
@@ -3202,7 +3226,7 @@ async function printReceipt(paymentId){
         <tr><td style="padding:6px 0;color:#555;">Date</td><td style="padding:6px 0;text-align:right;">${p.date}</td></tr>
         <tr><td style="padding:6px 0;color:#555;">Received From</td><td style="padding:6px 0;text-align:right;">${esc(s?.name||'')}</td></tr>
         <tr><td style="padding:6px 0;color:#555;">Class</td><td style="padding:6px 0;text-align:right;">${classById(s?.class_id)?.name||''}</td></tr>
-        <tr><td style="padding:6px 0;color:#555;">Term</td><td style="padding:6px 0;text-align:right;">${esc(p.term)}</td></tr>
+        <tr><td style="padding:6px 0;color:#555;">Term &amp; Session</td><td style="padding:6px 0;text-align:right;font-weight:700;">${esc(rowPeriod(p))}</td></tr>
         <tr><td style="padding:6px 0;color:#555;">Method</td><td style="padding:6px 0;text-align:right;">${esc(p.method||'')}</td></tr>
         ${p.note?`<tr><td style="padding:6px 0;color:#555;">Note</td><td style="padding:6px 0;text-align:right;">${esc(p.note)}</td></tr>`:''}
         <tr><td style="padding:12px 0 6px;border-top:2px solid #16345E;font-weight:700;">AMOUNT PAID</td><td style="padding:12px 0 6px;border-top:2px solid #16345E;text-align:right;font-weight:700;font-size:18px;">${naira(p.amount)}</td></tr>
@@ -3914,7 +3938,11 @@ async function syncFeeAssessments(force){
     const rows = students.map(s => ({ student_id: s.id, class_id: s.class_id, fee_category: s.fee_category, scholarship_id: schol[s.id] || null,
       scholarship_percent: FEE_PCT[s.id] || 0, tuition: tuitionOf(s.class_id, s.fee_category), discount: scholarshipDiscountFor(s), expected: expectedFeeFor(s) }));
     for (let i = 0; i < rows.length; i += 300) {
-      const { error } = await sb.rpc('fee_assessments_save', { p_term: term, p_rows: rows.slice(i, i + 300) });
+      const chunk = rows.slice(i, i + 300);
+      let { error } = await sb.rpc('fee_assessments_save', { p_term: term, p_session: curSession() || null, p_rows: chunk });
+      if (error && /could not find the function|PGRST202|does not exist/i.test(error.message + ' ' + (error.code || ''))) {
+        ({ error } = await sb.rpc('fee_assessments_save', { p_term: term, p_rows: chunk }));   // SQL 39 not run yet
+      }
       if (error) throw error;
     }
     return true;
@@ -3928,14 +3956,16 @@ const FEE_STATUS_LABEL = { paid: 'Fully paid', part: 'Part-paid', none: 'Not pai
 async function feeBook(force){
   if (!force && FEE_BOOK && Date.now() - FEE_BOOK_AT < 20000) return FEE_BOOK;
   await loadSettings(); await ensureFeePct(force); await syncFeeAssessments(false);
-  const term = SETTINGS_CACHE.current_term || '';
-  const [stu, pay, asm, schRes, ssRes] = await Promise.all([
+  const term = curPeriod() || '';
+  const norm = r => { const ses = rowSession(r); return Object.assign({}, r, { termRaw: r.term, session: ses, term: periodLabel(r.term, ses) }); };
+  const [stu, pay0, asm0, schRes, ssRes] = await Promise.all([
     fetchEveryRow('students', 'id,name,student_id,class_id,fee_category,status,parent_phone'),
-    fetchEveryRow('fee_payments', 'id,student_id,term,amount,date,receipt_no,method'),
+    fetchEveryRow('fee_payments', 'id,student_id,term,session,amount,date,receipt_no,method').catch(() => fetchEveryRow('fee_payments', 'id,student_id,term,amount,date,receipt_no,method')),
     fetchEveryRow('fee_assessments', '*').catch(() => []),
     sb.from('scholarships').select('*').order('sort'),
     fetchEveryRow('student_scholarships', 'id,student_id,scholarship_id').catch(() => []),
   ]);
+  const pay = pay0.map(norm), asm = (asm0 || []).map(norm);
   const schById = {}; (schRes.data || []).forEach(x => { schById[x.id] = x; });
   const schOf = {}; (ssRes || []).forEach(r => { if (schById[r.scholarship_id]) schOf[r.student_id] = schById[r.scholarship_id]; });
   const byId = {}; stu.forEach(s => { byId[s.id] = s; });
@@ -4082,22 +4112,23 @@ async function studentFeeHistoryPanel(s){
     const pct = live ? (FEE_PCT[s.id] || 0) : (a ? Number(a.scholarship_percent || 0) : 0);
     return { t, live, exp, pd, bal, st, pct };
   });
+  rows.sort((x, y) => termSortKey(y.t).localeCompare(termSortKey(x.t)));
   const owed = rows.reduce((x, r) => x + (r.bal || 0), 0), paidAll = rows.reduce((x, r) => x + r.pd, 0);
   const never = rows.filter(r => r.exp != null && r.exp > 0 && r.pd === 0).length;
   return `<div class="panel">
     <h2>Fees History</h2>
     <div class="desc">Every term, from now back to the first term on record. ${sch ? `Scholarship: <strong>${esc(sch.name)}</strong> (${sch.percent}% off tuition).` : 'No scholarship.'} Visible only to people allowed to see fee reports.</div>
     <div class="tablewrap"><table>
-      <tr><th>Term</th><th class="right">Expected</th><th class="right">Paid</th><th class="right">Outstanding</th><th>Status</th><th></th></tr>
+      <tr><th>Term &amp; Session</th><th class="right">Expected</th><th class="right">Paid</th><th class="right">Outstanding</th><th>Status</th><th></th></tr>
       ${rows.map(r => `<tr><td>${esc(r.t)}${r.live ? ' <span class="pill ok">current</span>' : ''}${r.pct ? ` <span class="pill warn">${r.pct}% scholarship</span>` : ''}</td>
         <td class="right mono">${r.exp == null ? '—' : naira(r.exp)}</td><td class="right mono">${naira(r.pd)}</td>
         <td class="right mono" style="color:${r.bal > 0 ? 'var(--bad)' : 'var(--ok)'};">${r.bal == null ? '—' : naira(r.bal)}</td>
-        <td>${r.st ? FEE_STATUS_LABEL[r.st] : '<span class="desc" style="margin:0;">before fee tracking began</span>'}</td>
+        <td>${r.st ? FEE_STATUS_LABEL[r.st] : `<span class="desc" style="margin:0;">${termSortKey(r.t) > termSortKey(b.term) ? 'paid in advance' : 'before fee tracking began'}</span>`}</td>
         <td class="right">${r.bal > 0 && hasPerm('record_payment') ? `<button class="btn small secondary" onclick="openPaymentForm('${s.id}','${esc(r.t).replace(/'/g,'&#39;')}')">Record payment</button>` : ''}</td></tr>`).join('')}
       <tr style="font-weight:700;"><td>Total</td><td></td><td class="right mono">${naira(paidAll)}</td><td class="right mono" style="color:${owed > 0 ? 'var(--bad)' : 'var(--ok)'};">${naira(owed)}</td><td colspan="2">${never ? `<span style="color:var(--bad);">${never} term(s) with nothing paid</span>` : ''}</td></tr>
     </table></div>
     ${pays.length ? `<h3 style="font-size:13px;margin:14px 0 6px;">Every payment</h3><div class="tablewrap"><table>
-      <tr><th>Date</th><th>Term</th><th>Receipt No.</th><th>Method</th><th class="right">Amount</th></tr>
+      <tr><th>Date</th><th>Term &amp; Session</th><th>Receipt No.</th><th>Method</th><th class="right">Amount</th></tr>
       ${pays.map(p => `<tr><td class="mono">${esc(p.date)}</td><td>${esc(p.term)}</td><td class="mono">${esc(p.receipt_no || '—')}</td><td>${esc(p.method || '')}</td><td class="right mono">${naira(p.amount)}</td></tr>`).join('')}
     </table></div>` : '<div class="desc">No payment has been recorded for this pupil yet.</div>'}
   </div>`;
@@ -4154,13 +4185,22 @@ function recModules(){
     statuses: ADMISSION_STATUSES });
   list.push({ key: 'payments', label: 'Fee payments / receipts', table: 'fee_payments', perm: 'receipts', date: 'date', needs: 'students',
     cols: [{ h: 'Receipt no.', g: r => r.receipt_no }, { h: 'Date', g: r => r.date }, { h: 'Student', g: (r, x) => (x.students[r.student_id] || {}).name || '' }, { h: 'Class', g: (r, x) => classById((x.students[r.student_id] || {}).class_id)?.name || '' },
-           { h: 'Session', g: r => termSession(r.term) }, { h: 'Term', g: r => termName(r.term) }, { h: 'Amount (₦)', g: r => r.amount, sum: true }, { h: 'Method', g: r => r.method }, { h: 'Note', g: r => r.note }, { h: 'Recorded by', g: r => r.recorded_by }] });
+           { h: 'Session', g: r => rowSession(r) }, { h: 'Term', g: r => termName(r.term) }, { h: 'Amount (₦)', g: r => r.amount, sum: true }, { h: 'Method', g: r => r.method }, { h: 'Note', g: r => r.note }, { h: 'Recorded by', g: r => r.recorded_by }] });
   list.push({ key: 'salary', label: 'Staff salary payments', table: 'salary_payments', perm: 'salary', date: 'date_paid', needs: 'staff',
     cols: [{ h: 'Staff', g: (r, x) => (x.staff[r.staff_id] || {}).name || '' }, { h: 'Month', g: r => r.month }, { h: 'Year', g: r => r.year }, { h: 'Amount (₦)', g: r => r.amount, sum: true }, { h: 'Bank', g: r => r.bank_name }, { h: 'Date paid', g: r => r.date_paid }, { h: 'Notes', g: r => r.notes }, { h: 'Recorded by', g: r => r.recorded_by }] });
   list.push({ key: 'audit', label: 'Audit log (who changed what)', table: 'audit_log', perm: 'auditLog', date: 'ts',
     cols: [['When', 'ts'], ['User', 'user_name'], ['Role', 'role'], ['Action', 'action'], ['Record type', 'entity'], ['Record', 'entity_id'], ['Reason', 'reason'], ['Source', 'source']].map(([h, k]) => ({ h, g: r => r[k] })) });
   return list.filter(m => can(m.perm) && (ACCESS_MODE !== 'rbac' || m.perm !== 'salary' || hasAnyPerm(['view_salary', 'process_payroll'])));
 }
+function normSession(x){ const m = String(x || '').match(/(\d{4})\s*\/\s*(\d{2,4})/); return m ? m[1] + '/' + m[2] : ''; }
+function curSession(){ return normSession(SETTINGS_CACHE.session_label) || termSession(SETTINGS_CACHE.current_term) || ''; }
+function rowSession(r){ return normSession(r && r.session) || termSession(r && r.term) || curSession(); }
+function periodLabel(term, session){ return (termName(term) + ' ' + (normSession(session) || '')).trim(); }
+function rowPeriod(r){ return periodLabel(r.term, rowSession(r)); }
+function curPeriod(){ return periodLabel(SETTINGS_CACHE.current_term, curSession()); }
+function inCurPeriod(r){ return rowPeriod(r).toLowerCase() === curPeriod().toLowerCase(); }
+function nextSessionOf(x){ const m = String(x || '').match(/(\d{4})\/(\d{2,4})/); if (!m) return ''; const a = Number(m[1]) + 1; return a + '/' + (a + 1); }
+function prevSessionOf(x){ const m = String(x || '').match(/(\d{4})\/(\d{2,4})/); if (!m) return ''; const a = Number(m[1]) - 1; return a + '/' + (a + 1); }
 function termSession(t){ const m = String(t || '').match(/\d{4}\s*\/\s*\d{2,4}/); return m ? m[0].replace(/\s/g, '') : ''; }
 function termName(t){ const s = termSession(t); return String(t || '').replace(s, '').replace(/\s+/g, ' ').trim(); }
 function termSortKey(t){ const y = (String(t || '').match(/\d{4}/) || ['0000'])[0]; const n = /first/i.test(t) ? 1 : /second/i.test(t) ? 2 : /third/i.test(t) ? 3 : 9; return y + n; }
@@ -4359,7 +4399,7 @@ async function printFeeStatement(classId){
   if (classId !== 'ALL') roster = roster.filter(s=>s.class_id===classId);
   const ids = roster.map(s=>s.id);
   const { data: payments } = ids.length ? await sb.from('fee_payments').select('*').in('student_id',ids).eq('term',term) : {data:[]};
-  const paidBy = {}; (payments||[]).forEach(p=>{ paidBy[p.student_id]=(paidBy[p.student_id]||0)+Number(p.amount); });
+  const paidBy = {}; (payments||[]).filter(inCurPeriod).forEach(p=>{ paidBy[p.student_id]=(paidBy[p.student_id]||0)+Number(p.amount); });
   const rows = roster.map(s=>{
     const expected = expectedFeeFor(s);
     const paid = paidBy[s.id]||0;
@@ -4368,7 +4408,7 @@ async function printFeeStatement(classId){
   printHTML(`<table style="width:100%;border-collapse:collapse;font-size:12px;font-family:Inter,sans-serif;">
     <tr style="background:#16345E;color:#fff;"><th style="padding:6px;text-align:left;">Name</th><th style="padding:6px;text-align:left;">Class</th><th style="padding:6px;">Expected</th><th style="padding:6px;">Paid</th><th style="padding:6px;">Balance</th></tr>
     ${rows || '<tr><td colspan="5" style="text-align:center;padding:10px;">No pupils.</td></tr>'}
-  </table>`, `Fee Statement — ${classId==='ALL'?'All Classes':classById(classId)?.name} — ${term}`);
+  </table>`, `Fee Statement — ${classId==='ALL'?'All Classes':classById(classId)?.name} — ${curPeriod()}`);
 }
 async function printDailyManagementReport(){
   await loadSettings();
@@ -4376,8 +4416,8 @@ async function printDailyManagementReport(){
   const { data: students } = await sb.from('students').select('*');
   const active = (students||[]).filter(isActiveStudent);
   const ids = active.map(s=>s.id);
-  const { data: payments } = ids.length ? await sb.from('fee_payments').select('amount').in('student_id',ids).eq('term',term) : {data:[]};
-  const collected = (payments||[]).reduce((a,p)=>a+Number(p.amount),0);
+  const { data: payments } = ids.length ? await sb.from('fee_payments').select('*').in('student_id',ids).eq('term',term) : {data:[]};
+  const collected = (payments||[]).filter(inCurPeriod).reduce((a,p)=>a+Number(p.amount),0);
   await ensureFeePct(); let expected = 0; active.forEach(s=>expected+=expectedFeeFor(s));
   const today = todayISO();
   const { data: todayAtt } = await sb.from('attendance').select('status').eq('date', today);
