@@ -4640,14 +4640,8 @@ async function idCardInfo(type, rec, ctx){
   const isStaff = type === 'staff';
   let title = '', title2 = '', dept = '';
   if (isStaff) {
-    let rankName = '';
-    try { if (rec.career_rank) { if (!(CAREER && CAREER.ranks && CAREER.ranks.length)) await loadCareerRefs(); const r = rankObj(rec.career_rank); rankName = r ? r.designation : ''; } } catch(e) {}
-    let pors = ctx.pors;
-    if (!pors) { try { const r = await sb.from('por_assignments').select('*').eq('staff_id', rec.id); pors = r.data || []; } catch(e) { pors = []; } }
-    let porNames = [];
-    try { porNames = pors.filter(a => a.staff_id === rec.id && porState(a) === 'active').map(a => (positionById(a.position_id) || {}).name).filter(Boolean); } catch(e) {}
-    title = rankName || rec.role || 'Staff';
-    title2 = porNames.length ? porNames.join(', ') : ((rankName && rec.role && rec.role.toLowerCase() !== rankName.toLowerCase()) ? rec.role : '');
+    // Only the Job title typed on the staff profile is printed (no automatic rank or position of responsibility)
+    title = (rec.role || '').trim() || 'Staff'; title2 = '';
     dept = rec.department || '';
   } else {
     title = classById(rec.class_id)?.name || 'Pupil';
@@ -4683,7 +4677,7 @@ function idCardHtml(i){
     ${i.photo ? `<img src="${esc(i.photo)}" style="position:absolute;left:3.8mm;top:20.4mm;width:17mm;height:21mm;object-fit:cover;border-radius:2mm;border:0.5mm solid #C9982E;box-sizing:border-box;z-index:3;background:#fff;">`
       : `<div style="position:absolute;left:3.8mm;top:20.4mm;width:17mm;height:21mm;border-radius:2mm;border:0.5mm solid #C9982E;box-sizing:border-box;background:#F5F2EA;display:flex;align-items:center;justify-content:center;color:#8a6d1f;font-size:20pt;font-weight:700;z-index:3;">${esc(i.initial)}</div>`}
     <div style="position:absolute;left:24.4mm;right:4mm;top:19.6mm;height:22.6mm;display:flex;flex-direction:column;justify-content:center;z-index:3;overflow:hidden;">
-      <div style="${serif}font-weight:700;font-size:${nm}pt;color:#16345E;line-height:1.1;max-height:9.2mm;overflow:hidden;word-break:break-word;">${esc(i.name)}</div>
+      <div style="${serif}font-weight:700;font-size:${nm}pt;color:#16345E;line-height:1.28;padding-bottom:.5mm;max-height:11mm;word-break:break-word;">${esc(i.name)}</div>
       <div style="font-weight:700;font-size:${t1}pt;color:#7A1F2B;margin-top:.7mm;line-height:1.15;">${esc(i.title)}</div>
       ${i.title2 ? `<div style="font-weight:600;font-size:6.4pt;color:#16345E;line-height:1.15;margin-top:.3mm;max-height:5mm;overflow:hidden;">${esc(i.title2)}</div>` : ''}
       <div style="width:24mm;height:0.3mm;background:#C9982E;margin:1.3mm 0;"></div>
