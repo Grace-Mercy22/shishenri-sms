@@ -414,7 +414,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r31'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r32'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -4537,38 +4537,81 @@ async function printIdCard(type, id){
   const dateLabel = isStaff ? 'Date of Engagement' : 'Date of Admission';
   const dateVal = isStaff ? rec.date_joined : rec.admission_date;
   const qr = rec.verify_token ? await makeQrDataUrl(verifyUrlFor(rec.verify_token)) : null;
-  const front = `<div style="width:330px;border-radius:14px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.15);font-family:Inter,sans-serif;margin:0 auto;border:1px solid #ddd;">
-    <div style="background:linear-gradient(135deg,#16345E,#0f2647);padding:14px 16px;display:flex;align-items:center;gap:10px;">
-      <img src="${LOGO_DATA_URI}" style="width:34px;height:auto;">
-      <div style="color:#fff;"><div style="font-weight:700;font-size:13px;">SHISHENRI SCHOOLS</div><div style="font-size:9px;color:#C9982E;font-style:italic;">"Breath of Excellence"</div></div>
+  const phone = isStaff ? (rec.phone||'') : (rec.parent_phone||'');
+  const box = 'width:85.6mm;height:53.98mm;box-sizing:border-box;border-radius:3mm;overflow:hidden;display:flex;flex-direction:column;font-family:Inter,Arial,sans-serif;background:#fff;border:0.2mm solid #cfcfcf;margin:0 auto;';
+  const front = `<div class="idcard" style="${box}">
+    <div style="background:linear-gradient(135deg,#16345E,#0f2647);height:11mm;flex:none;padding:0 4mm;display:flex;align-items:center;gap:2.5mm;">
+      <img src="${LOGO_DATA_URI}" style="height:8mm;width:auto;">
+      <div style="color:#fff;line-height:1.25;"><div style="font-weight:700;font-size:9pt;">SHISHENRI SCHOOLS</div><div style="font-size:5.8pt;color:#C9982E;font-style:italic;">"Breath of Excellence"</div></div>
     </div>
-    <div style="background:#fff;padding:16px;display:flex;gap:14px;">
-      ${rec.photo_url ? `<img src="${rec.photo_url}" style="width:70px;height:82px;object-fit:cover;border-radius:5px;border:1px solid #ddd;">` : `<div style="width:70px;height:82px;border-radius:5px;border:1px solid #ddd;background:#F5F2EA;display:flex;align-items:center;justify-content:center;color:#8a6d1f;font-size:26px;font-weight:700;">${esc((rec.name||'?').charAt(0))}</div>`}
-      <div style="flex:1;">
-        <div style="font-weight:700;font-size:14.5px;color:#16345E;">${esc(rec.name)}</div>
-        <div style="font-size:11.5px;color:#7A1F2B;font-weight:600;margin-top:2px;">${esc(subtitle)}</div>
-        <div style="font-size:10px;color:#555;margin-top:8px;">${isStaff?'Staff ID':'Student ID'}</div>
-        <div style="font-size:13px;font-weight:700;color:#111;font-family:monospace;">${esc(idNumber)}</div>
+    <div style="flex:1;min-height:0;padding:0 4mm;display:flex;align-items:center;gap:4mm;">
+      ${rec.photo_url ? `<img src="${rec.photo_url}" style="width:17mm;height:21mm;object-fit:cover;border-radius:1.2mm;border:0.2mm solid #ddd;flex:none;">` : `<div style="width:17mm;height:21mm;flex:none;border-radius:1.2mm;border:0.2mm solid #ddd;background:#F5F2EA;display:flex;align-items:center;justify-content:center;color:#8a6d1f;font-size:16pt;font-weight:700;">${esc((rec.name||'?').charAt(0))}</div>`}
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;font-size:10pt;color:#16345E;line-height:1.15;">${esc(rec.name)}</div>
+        <div style="font-size:7.5pt;color:#7A1F2B;font-weight:600;margin-top:0.6mm;">${esc(subtitle)}</div>
+        <div style="font-size:6pt;color:#555;margin-top:2mm;">${isStaff?'Staff ID':'Student ID'}</div>
+        <div style="font-size:9pt;font-weight:700;color:#111;font-family:monospace;">${esc(idNumber)}</div>
       </div>
     </div>
-    <div style="background:#F5F2EA;padding:8px 16px;display:flex;justify-content:space-between;font-size:9px;color:#666;border-top:1px solid #e5e0d0;">
-      <span>Sabon Gida, Kokona L.G.A., Nasarawa State</span><span>${isStaff?esc(rec.phone||''):esc(rec.parent_phone||'')}</span>
+    <div style="background:#F5F2EA;height:5.5mm;flex:none;padding:0 4mm;display:flex;align-items:center;justify-content:space-between;font-size:5.6pt;color:#666;border-top:0.2mm solid #e5e0d0;">
+      <span>Sabon Gida, Kokona L.G.A., Nasarawa State</span><span>${esc(phone)}</span>
     </div>
-    <div style="background:#7A1F2B;padding:5px;text-align:center;font-size:8.5px;color:#fff;">IF FOUND, PLEASE RETURN TO SHISHENRI SCHOOLS</div>
+    <div style="background:#7A1F2B;height:4mm;flex:none;display:flex;align-items:center;justify-content:center;font-size:5.6pt;color:#fff;">IF FOUND, PLEASE RETURN TO SHISHENRI SCHOOLS</div>
   </div>`;
-  const back = `<div style="width:330px;border-radius:14px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.15);font-family:Inter,sans-serif;margin:0 auto;border:1px solid #ddd;background:#fff;">
-    <div style="background:#16345E;padding:8px 16px;color:#fff;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-align:center;">SHISHENRI SCHOOLS &middot; ${isStaff?'STAFF':'STUDENT'} IDENTITY CARD</div>
-    <div style="padding:14px 16px;text-align:center;">
-      <div style="font-size:9px;color:#777;">${dateLabel}</div>
-      <div style="font-size:11.5px;font-weight:700;color:#111;">${fmtDate(dateVal)}</div>
-      <div style="margin:10px auto 4px;">${qr ? `<img src="${qr}" style="width:78px;height:78px;">` : `<div style="width:78px;height:78px;margin:0 auto;border:1px dashed #bbb;font-size:8px;color:#999;display:flex;align-items:center;justify-content:center;">QR unavailable</div>`}</div>
-      <div style="font-size:8.5px;color:#555;">Scan to verify this card is genuine</div>
+  const back = `<div class="idcard" style="${box}">
+    <div style="background:#16345E;height:7mm;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-size:7pt;font-weight:700;letter-spacing:.06em;">SHISHENRI SCHOOLS &middot; ${isStaff?'STAFF':'STUDENT'} IDENTITY CARD</div>
+    <div style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;">
+      <div style="font-size:6pt;color:#777;">${dateLabel}</div>
+      <div style="font-size:8pt;font-weight:700;color:#111;margin-bottom:1.2mm;">${fmtDate(dateVal)}</div>
+      ${qr ? `<img src="${qr}" style="width:19mm;height:19mm;">` : `<div style="width:19mm;height:19mm;border:0.2mm dashed #bbb;font-size:5pt;color:#999;display:flex;align-items:center;justify-content:center;">QR unavailable</div>`}
+      <div style="font-size:5.6pt;color:#555;margin-top:1mm;">Scan to verify this card is genuine</div>
     </div>
-    <div style="background:#F5F2EA;padding:7px 14px;font-size:7.5px;color:#666;text-align:center;line-height:1.5;border-top:1px solid #e5e0d0;">This card is the property of ShiShenri Schools and is not transferable. Tel: 0811 637 9329 &middot; 0903 445 6147 &middot; shishenrischools@gmail.com</div>
+    <div style="background:#F5F2EA;height:8mm;flex:none;padding:0 4mm;display:flex;align-items:center;justify-content:center;font-size:5pt;color:#666;text-align:center;line-height:1.4;border-top:0.2mm solid #e5e0d0;">This card is the property of ShiShenri Schools and is not transferable. Tel: 0811 637 9329 &middot; 0903 445 6147 &middot; shishenrischools@gmail.com</div>
   </div>`;
+  LAST_ID_CARD = { front, back, name: rec.name, isStaff };
   const note = qr ? '' : `<div class="bignote" style="margin-bottom:10px;">The QR code could not be created (the QR library may not have loaded, or the database update has not been run yet).</div>`;
-  printHTML(`${note}<div style="text-align:center;font-size:10px;color:#888;margin-bottom:4px;">FRONT</div>${front}<div style="text-align:center;font-size:10px;color:#888;margin:16px 0 4px;">BACK</div>${back}`,
+  printHTML(`${note}<div class="no-print" style="text-align:center;margin-bottom:10px;"><button class="btn small" onclick="printIdCardExact()">Print at exact card size (85.6 &times; 53.98 mm)</button> <button class="btn small secondary" onclick="downloadIdCardPdf()">Card-size PDF (2 pages)</button><div class="desc" style="margin-top:4px;">Landscape CR80 card, 3 mm corners, front and back on separate pages for double-sided printing. In the print dialog set Scale to 100% and Margins to None.</div></div>
+    <div style="text-align:center;font-size:10px;color:#888;margin-bottom:4px;">FRONT</div>${front}<div style="text-align:center;font-size:10px;color:#888;margin:16px 0 4px;">BACK</div>${back}`,
     `${isStaff?'Staff':'Student'} ID Card — ${esc(rec.name)}`);
+}
+let LAST_ID_CARD = null;
+function printIdCardExact(){
+  if (!LAST_ID_CARD) return;
+  const fr = document.createElement('iframe'); fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  document.body.appendChild(fr);
+  const d = fr.contentWindow.document;
+  d.open(); d.write(`<!doctype html><html><head><title>ID Card</title><style>
+    @page { size: 85.6mm 53.98mm; margin: 0; }
+    html, body { margin: 0; padding: 0; background: #fff; }
+    .pg { width: 85.6mm; height: 53.98mm; overflow: hidden; page-break-after: always; break-after: page; }
+    .pg:last-child { page-break-after: auto; break-after: auto; }
+    .idcard { margin: 0 !important; border: 0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  </style></head><body><div class="pg">${LAST_ID_CARD.front}</div><div class="pg">${LAST_ID_CARD.back}</div></body></html>`); d.close();
+  const go = () => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch(e) { toast('Could not open the print dialog.'); } setTimeout(() => fr.remove(), 4000); };
+  setTimeout(go, 500);
+}
+async function downloadIdCardPdf(){
+  if (!LAST_ID_CARD) return;
+  if (!window.jspdf || !window.html2canvas) { toast('PDF engine did not load — use "Print at exact card size" instead.'); return; }
+  toast('Generating card PDF…');
+  try {
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ unit: 'mm', format: [85.6, 53.98], orientation: 'landscape' });
+    let first = true;
+    for (const html of [LAST_ID_CARD.front, LAST_ID_CARD.back]) {
+      const c = document.createElement('div');
+      c.style.cssText = 'position:fixed;left:-9999px;top:0;background:#fff;';
+      c.innerHTML = html; document.body.appendChild(c);
+      await inlineRemoteImages(c);
+      const el = c.firstElementChild; el.style.border = '0'; el.style.borderRadius = '0';
+      const canvas = await window.html2canvas(el, { scale: 5, backgroundColor: '#ffffff', useCORS: true, allowTaint: false });
+      document.body.removeChild(c);
+      if (!first) pdf.addPage([85.6, 53.98], 'landscape'); first = false;
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 85.6, 53.98);
+    }
+    pdf.save('ID_Card_' + String(LAST_ID_CARD.name || 'card').replace(/[^\w]+/g, '_') + '.pdf');
+  } catch(e) { toast('Could not make the PDF: ' + e.message); }
 }
 
 
