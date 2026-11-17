@@ -414,7 +414,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r33'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r35'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -1004,7 +1004,7 @@ let DASH = { kind: null, arg: null, date: null, status: '', q: '' };
 const DASH_NEEDS = { students:'view_students', staff:'view_staff', stuAtt:'view_attendance', staffAtt:'view_staff_attendance', outside:'view_staff_attendance',
   fees:'view_fees', admissions:'view_admissions', discipline:'view_discipline', safeguarding:'view_safeguarding', inspections:'view_inspections',
   procurement:'view_procurement', leave:'view_staff_leave', class:'view_students',
-  feeSchol:'view_fee_reports', feeOwe:'view_fee_reports', feePart:'view_fee_reports', feePrev:'view_fee_reports' };
+  feeSchol:'view_fee_reports', feePaid:'view_fee_reports', feeOwe:'view_fee_reports', feePart:'view_fee_reports', feePrev:'view_fee_reports' };
 const fmtDist = m => m == null ? '—' : (m >= 1000 ? (m/1000).toFixed(1) + ' km' : Math.round(m) + ' m');
 function dashGo(tab){ closeModal(); CUR_TAB = tab; openStudentId = null; openStaffProfileId = null; renderNav(); render(); }
 function dashGoStudent(id){ if (!can('students')) return; closeModal(); CUR_TAB = 'students'; openStudentId = id; renderNav(); render(); }
@@ -1036,7 +1036,7 @@ const spill = st => ({ P:'<span class="pill ok">Present</span>', L:'<span class=
 
 async function dashBody(){
   const k = DASH.kind, d = DASH.date;
-  if (['feeSchol','feeOwe','feePart','feePrev'].includes(k)) return await feeDashDetail(k);
+  if (['feeSchol','feePaid','feeOwe','feePart','feePrev'].includes(k)) return await feeDashDetail(k);
   if (k === 'students' || k === 'class') {
     const { data } = await sb.from('students').select('*').order('name');
     let list = (data || []).filter(isActiveStudent);
@@ -2553,7 +2553,7 @@ function printableHtmlToDocxBodyXml(containerEl, media){
       cellEls.forEach(td => {
         const isHeader = td.tagName.toLowerCase()==='th' || /background:\s*#16345E/i.test(td.getAttribute('style')||'');
         const imgInCell = td.querySelector('img');
-        const cellBody = imgInCell ? imageDrawingXml(imgInCell, media) : `<w:p><w:r>${isHeader?'<w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr>':''}<w:t xml:space="preserve">${xmlEscape(td.textContent.trim())}</w:t></w:r></w:p>`;
+        const cellBody = imgInCell ? imageDrawingXml(imgInCell, media) + (td.textContent.trim() ? `<w:p><w:r><w:t xml:space="preserve">${xmlEscape(td.textContent.trim())}</w:t></w:r></w:p>` : '') : `<w:p><w:r>${isHeader?'<w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr>':''}<w:t xml:space="preserve">${xmlEscape(td.textContent.trim())}</w:t></w:r></w:p>`;
         t += `<w:tc><w:tcPr><w:tcW w:w="${pct}" w:type="pct"/>${isHeader?'<w:shd w:val="clear" w:fill="16345E"/>':''}</w:tcPr>${cellBody}</w:tc>`;
       });
       t += '</w:tr>';
@@ -2574,6 +2574,54 @@ function printableHtmlToDocxBodyXml(containerEl, media){
   Array.from(containerEl.children).forEach(walk);
   return xml || paragraphXml(containerEl.textContent, false);
 }
+async function toPngDataUri(src){
+  return new Promise(res => { const im = new Image(); im.onload = () => { try { const c = document.createElement('canvas'); c.width = im.naturalWidth || 100; c.height = im.naturalHeight || 100; c.getContext('2d').drawImage(im, 0, 0); res(c.toDataURL('image/png')); } catch(e) { res(null); } }; im.onerror = () => res(null); im.src = src; });
+}
+// Word cannot draw CSS layouts (flex, absolute, gradients, SVG, ID cards). Those blocks are captured as pictures at their true size;
+// tables and plain text stay editable. Pictures in unsupported formats (webp, svg, gif) are converted to PNG.
+async function prepareContainerForWord(container){
+  container.querySelectorAll('.no-print').forEach(e => e.remove());
+  if (window.html2canvas) {
+    const needsSnap = el => {
+      const t = el.tagName.toLowerCase();
+      if (['table','tr','td','th','img','h1','h2','h3','script','style'].includes(t)) return false;
+      if (el.classList.contains('idcard')) return true;
+      if (el.querySelector('table, .idcard')) return false;
+      const st = (el.getAttribute('style') || '').toLowerCase();
+      if (/display:\s*(inline-)?flex|display:\s*grid|position:\s*absolute|gradient|float:/.test(st)) return true;
+      return !!el.querySelector('img') && el.children.length > 1;
+    };
+    const targets = [];
+    (function find(node){ Array.from(node.children).forEach(ch => { if (needsSnap(ch)) targets.push(ch); else find(ch); }); })(container);
+    for (const el of targets) {
+      const holder = document.createElement('div');
+      holder.style.cssText = 'position:fixed;left:-9999px;top:0;width:640px;background:#fff;';
+      const clone = el.cloneNode(true); holder.appendChild(clone); document.body.appendChild(holder);
+      try {
+        const r = clone.getBoundingClientRect();
+        const canvas = await window.html2canvas(clone, { scale: 3, backgroundColor: '#ffffff', useCORS: true });
+        const wpx = Math.max(10, Math.min(Math.round(r.width), 600)), hpx = Math.max(10, Math.round(r.height * wpx / (r.width || wpx)));
+        const img = document.createElement('img');
+        img.setAttribute('src', canvas.toDataURL('image/png')); img.setAttribute('style', `width:${wpx}px;height:${hpx}px;`);
+        el.replaceWith(img);
+      } catch(e) { /* leave the block as plain text */ }
+      finally { document.body.removeChild(holder); }
+    }
+  }
+  for (const img of Array.from(container.querySelectorAll('img'))) {
+    let src = img.getAttribute('src') || '';
+    if (!/^data:image\/(png|jpe?g);base64,/i.test(src)) {
+      const png = src ? await toPngDataUri(src) : null;
+      if (png) { img.setAttribute('src', png); src = png; } else { img.remove(); continue; }
+    }
+    if (!/width:\s*[0-9.]+px/i.test(img.getAttribute('style') || '')) {
+      const probe = new Image(); probe.src = src; try { await probe.decode(); } catch(e) {}
+      let w = probe.naturalWidth || 80, h = probe.naturalHeight || 80;
+      if (w > 600) { h = Math.round(h * 600 / w); w = 600; }
+      img.setAttribute('style', `width:${w}px;height:${h}px;`);
+    }
+  }
+}
 async function downloadPrintAsWord(){
   if (!window.JSZip) { toast('Word engine did not load — try Download HTML instead.'); return; }
   toast('Generating Word document…');
@@ -2581,6 +2629,7 @@ async function downloadPrintAsWord(){
     const container = document.createElement('div');
     container.innerHTML = LAST_PRINT_HTML;
     await inlineRemoteImages(container); // turns photo URLs into embeddable data first
+    await prepareContainerForWord(container);
     const media = { files: [] };
     const bodyXml = printableHtmlToDocxBodyXml(container, media);
     const hasImages = media.files.length > 0;
@@ -3099,7 +3148,8 @@ async function copyCommunication(id){
 // =====================================================================
 // FEES & RECEIPTS
 // =====================================================================
-let feesState = { classId: 'ALL' };
+let feesState = { classId: 'ALL', filter: 'ALL' };
+const FEE_FILTERS = [['ALL','Everyone'],['paid','Paid in full'],['part','Part payment'],['none','Not paid at all'],['owe','Owing this term (part or none)'],['prev','Owing other terms / sessions']];
 
 async function renderFees(){
   await loadSettings(); await ensureFeePct(); syncFeeAssessments(false);
@@ -3122,21 +3172,46 @@ async function renderFees(){
   payments.forEach(p => { paidByStudent[p.student_id] = (paidByStudent[p.student_id]||0) + Number(p.amount); });
 
   let totalExpected = 0, totalCollected = 0;
-  const rows = roster.map(s => {
+  let rows = roster.map(s => {
     const expected = expectedFeeFor(s);
     const paid = paidByStudent[s.id] || 0;
-    totalExpected += expected; totalCollected += paid;
-    return { s, expected, paid, balance: Math.max(expected - paid, 0) };
+    return { s, expected, paid, balance: Math.max(expected - paid, 0), st: feeStatusOf(expected, paid) };
   });
+  const flt = feesState.filter || 'ALL';
+  let prevRows = null;
+  if (flt === 'prev') {
+    try {
+      const b = await feeBook(); const okIds = new Set(roster.map(s => s.id));
+      prevRows = sortFeeRows(b.prev.filter(r => r.bal > 0 && okIds.has(r.s.id)));
+    } catch(e) { prevRows = []; }
+  } else if (flt === 'owe') rows = rows.filter(r => r.balance > 0);
+  else if (flt !== 'ALL') rows = rows.filter(r => r.st === flt);
+  rows.forEach(r => { totalExpected += r.expected; totalCollected += r.paid; });
+  const fltSel = `<select onchange="feesState.filter=this.value;renderTabAsync();" title="Show only…">${FEE_FILTERS.map(([v, l]) => `<option value="${v}" ${flt === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  if (prevRows) {
+    const owedTotal = prevRows.reduce((a, r) => a + r.bal, 0);
+    return `<div class="panel">
+      <div class="row between" style="margin-bottom:6px;"><div class="row">
+        <select onchange="feesState.classId=this.value;renderTabAsync();"><option value="ALL">All ${isScopedRole('fees')?'My':''} Classes</option>${myClasses.map(c=>`<option value="${c.id}" ${feesState.classId===c.id?'selected':''}>${c.name}</option>`).join('')}</select>${fltSel}</div>
+        <span class="desc" style="margin:0;">${prevRows.length} unpaid term record(s) · ${naira(owedTotal)} outstanding</span></div>
+      <div class="desc">Fees still owed from earlier terms and sessions (from the fees frozen at the end of each term).</div>
+      ${prevRows.length === 0 ? `<div class="empty">Nobody owes fees from an earlier term or session.</div>` : `<div class="tablewrap"><table>
+        <tr><th>Name</th><th>Class</th><th>Session</th><th>Term</th><th class="right">Expected</th><th class="right">Paid</th><th class="right">Balance</th><th></th></tr>
+        ${prevRows.map(r => `<tr><td>${esc(r.s.name)}</td><td>${classById(r.s.class_id)?.name||''}</td><td>${esc(termSession(r.term))}</td><td>${esc(termName(r.term))}</td>
+          <td class="right mono">${naira(r.exp)}</td><td class="right mono">${naira(r.paid)}</td><td class="right mono" style="color:var(--bad);">${naira(r.bal)}</td>
+          <td class="right"><button class="btn small secondary" onclick="openPaymentForm('${r.s.id}', '${esc(r.term).replace(/'/g, '&#39;')}')">Record Payment</button></td></tr>`).join('')}
+      </table></div>`}
+    </div>`;
+  }
 
   return `
   <div class="panel">
     <div class="row between" style="margin-bottom:6px;">
-      <select onchange="feesState.classId=this.value;renderTabAsync();">
+      <div class="row"><select onchange="feesState.classId=this.value;renderTabAsync();">
         <option value="ALL">All ${isScopedRole('fees')?'My':''} Classes</option>
         ${myClasses.map(c=>`<option value="${c.id}" ${feesState.classId===c.id?'selected':''}>${c.name}</option>`).join('')}
-      </select>
-      <span class="desc" style="margin:0;">Term: <strong>${esc(curPeriod())}</strong> · Expected ${naira(totalExpected)} · Collected ${naira(totalCollected)}</span>
+      </select>${fltSel}</div>
+      <span class="desc" style="margin:0;">${rows.length} pupil(s) · Term: <strong>${esc(curPeriod())}</strong> · Expected ${naira(totalExpected)} · Collected ${naira(totalCollected)}</span>
     </div>
     ${rows.length===0 ? `<div class="empty">No pupils match.</div>` : `
     <div class="tablewrap"><table>
@@ -3198,13 +3273,65 @@ async function openPaymentForm(studentId, periodArg){
     <h3 style="font-size:13px;margin:16px 0 8px;">Payments for ${esc(period)}</h3>
     <div class="tablewrap"><table>
       <tr><th>Receipt No.</th><th>Date</th><th class="right">Amount</th><th>Method</th><th></th></tr>
-      ${payments.map(p=>`<tr><td class="mono">${esc(p.receipt_no||'—')}</td><td class="mono">${p.date}</td><td class="right mono">${naira(p.amount)}</td><td>${esc(p.method||'')}</td><td class="right"><button class="iconbtn" onclick="printReceipt('${p.id}')">Receipt</button></td></tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--grey);">None yet.</td></tr>'}
+      ${payments.map(p=>`<tr><td class="mono">${esc(p.receipt_no||'—')}</td><td class="mono">${p.date}</td><td class="right mono">${naira(p.amount)}</td><td>${esc(p.method||'')}</td><td class="right"><button class="iconbtn" onclick="printReceipt('${p.id}')">Receipt</button>${hasPerm('edit_payment') ? ` <button class="iconbtn" onclick="openPaymentEdit('${p.id}','${studentId}')">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--grey);">None yet.</td></tr>'}
     </table></div>
     <div class="mfoot">
       <button class="btn secondary" onclick="closeModal()">Close</button>
       <button class="btn" id="paySaveBtn" onclick="savePayment('${studentId}')">Save Payment</button>
     </div>
   `, true);
+}
+function storedTermFor(pTerm, pSess){
+  const period = periodLabel(pTerm, pSess);
+  // the current term keeps the exact label from Settings so older pages still match it
+  return period.toLowerCase() === curPeriod().toLowerCase() ? SETTINGS_CACHE.current_term : (termSession(SETTINGS_CACHE.current_term) ? period : pTerm);
+}
+async function openPaymentEdit(paymentId, studentId){
+  if (!hasPerm('edit_payment')) { toast('You do not have permission to edit payments.'); return; }
+  const { data: p } = await sb.from('fee_payments').select('*').eq('id', paymentId).maybeSingle();
+  if (!p) { toast('Payment not found.'); return; }
+  await loadSettings();
+  const selTerm = termName(rowPeriod(p)), selSess = rowSession(p);
+  const termOpts = [...new Set([...PAY_TERM_NAMES, termName(curPeriod()), selTerm])].filter(Boolean);
+  const sessOpts = [...new Set([prevSessionOf(curSession()), curSession(), nextSessionOf(curSession()), selSess])].filter(Boolean).sort();
+  const methods = [...new Set(['Cash', 'Bank Transfer', 'POS', 'Mobile Money', p.method].filter(Boolean))];
+  openModal(`
+    <h3>Edit Payment — Receipt ${esc(p.receipt_no || '')}</h3>
+    <div class="msub">Correct a wrongly entered amount, date, method, note, term or session. The receipt number stays the same, and every change is recorded in the audit log.</div>
+    <div class="fgrid">
+      <div class="field"><label>Fee is for Term *</label><select id="pe_term">${termOpts.map(t => `<option ${t === selTerm ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
+      <div class="field"><label>Academic Session *</label><select id="pe_session">${sessOpts.map(t => `<option ${t === selSess ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
+    </div>
+    <div class="fgrid">
+      <div class="field"><label>Amount (₦) *</label><input id="pe_amount" type="number" value="${Number(p.amount)}"></div>
+      <div class="field"><label>Date *</label><input id="pe_date" type="date" value="${esc(String(p.date || '').slice(0, 10))}"></div>
+    </div>
+    <div class="fgrid">
+      <div class="field"><label>Method</label><select id="pe_method">${methods.map(m => `<option ${m === p.method ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
+      <div class="field"><label>Note</label><input id="pe_note" value="${esc(p.note || '')}"></div>
+    </div>
+    <div id="peStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="openPaymentForm('${studentId}')">Back</button><button class="btn" id="peBtn" onclick="savePaymentEdit('${paymentId}','${studentId}')">Save changes</button></div>`);
+}
+async function savePaymentEdit(paymentId, studentId){
+  const st = document.getElementById('peStatus'), btn = document.getElementById('peBtn');
+  const amount = Number(document.getElementById('pe_amount').value), date = document.getElementById('pe_date').value;
+  if (!(amount > 0) || !date) { st.textContent = 'Enter a valid amount and date.'; return; }
+  const pTerm = document.getElementById('pe_term').value, pSess = document.getElementById('pe_session').value;
+  btn.disabled = true; st.textContent = 'Saving…';
+  try {
+    const { data: before } = await sb.from('fee_payments').select('*').eq('id', paymentId).maybeSingle();
+    const patch = { term: storedTermFor(pTerm, pSess), amount, date, method: document.getElementById('pe_method').value, note: document.getElementById('pe_note').value.trim() };
+    let { data, error } = await sb.from('fee_payments').update(Object.assign({ session: pSess }, patch)).eq('id', paymentId).select('id');
+    if (error && /session/i.test(error.message) && /column|schema cache/i.test(error.message)) {
+      if (pSess !== curSession()) throw new Error('Moving a payment to another session needs SQL file 39 to be run first.');
+      ({ data, error } = await sb.from('fee_payments').update(patch).eq('id', paymentId).select('id'));
+    }
+    if (error) throw error;
+    if (!data || !data.length) throw new Error('Not saved — you may not be allowed to edit payments.');
+    await logAudit('update', 'fee_payments', paymentId, { student_id: studentId, receipt_no: before?.receipt_no, old: { amount: before?.amount, date: before?.date, term: before?.term, session: before?.session, method: before?.method }, new: { amount, date, term: pTerm, session: pSess } });
+    FEE_BOOK = null; toast('Payment corrected.'); openPaymentForm(studentId, periodLabel(pTerm, pSess));
+  } catch(e) { btn.disabled = false; st.textContent = 'Could not save: ' + e.message; }
 }
 async function savePayment(studentId){
   const btn = document.getElementById('paySaveBtn');
@@ -3219,7 +3346,7 @@ async function savePayment(studentId){
     const pSess = document.getElementById('pay_session')?.value || curSession();
     const period = periodLabel(pTerm, pSess);
     // the current term keeps the exact label from Settings so older pages still match it
-    const storedTerm = period.toLowerCase() === curPeriod().toLowerCase() ? SETTINGS_CACHE.current_term : (termSession(SETTINGS_CACHE.current_term) ? period : pTerm);
+    const storedTerm = storedTermFor(pTerm, pSess);
     const row = { student_id: studentId, term: storedTerm, amount, date,
       method: document.getElementById('pay_method').value,
       note: document.getElementById('pay_note').value.trim(),
@@ -4062,7 +4189,7 @@ async function feeBook(force){
 function feeSummary(b){
   const owe = b.cur.filter(r => r.bal > 0);
   const prevOwe = b.prev.filter(r => r.bal > 0);
-  return { schol: b.cur.filter(r => r.sch).length, owe, none: owe.filter(r => r.status === 'none'), part: owe.filter(r => r.status === 'part'),
+  return { schol: b.cur.filter(r => r.sch).length, paidFull: b.cur.filter(r => r.status === 'paid'), owe, none: owe.filter(r => r.status === 'none'), part: owe.filter(r => r.status === 'part'),
            prevOwe, prevStudents: new Set(prevOwe.map(r => r.s.id)).size, prevTotal: prevOwe.reduce((a, r) => a + r.bal, 0) };
 }
 const classOrder = id => { const i = CLASSES.findIndex(c => c.id === id); return i < 0 ? 99 : i; };
@@ -4079,6 +4206,7 @@ async function feeFollowUpPanel(){
     <div class="desc">${esc(b.term)} &middot; click a tile to see the full list. Visible only to people allowed to see fee reports.</div>
     <div class="kpis">
       <div class="kpi clickable" onclick="dashOpen('feeSchol')"><div class="label">Students on Scholarship</div><div class="value">${m.schol}</div></div>
+      <div class="kpi clickable" onclick="dashOpen('feePaid')"><div class="label">Fully Paid This Term</div><div class="value" style="color:var(--ok);">${m.paidFull.length}</div><div class="note">of ${b.cur.length} pupils</div></div>
       <div class="kpi clickable" onclick="dashOpen('feeOwe')"><div class="label">Owing This Term</div><div class="value" style="color:${m.owe.length?'var(--bad)':'var(--ok)'};">${m.owe.length}</div><div class="note">${m.none.length} not paid at all &middot; ${m.part.length} part-paid</div></div>
       <div class="kpi clickable" onclick="dashOpen('feePart')"><div class="label">Part-payment This Term</div><div class="value" style="color:var(--warn);">${m.part.length}</div></div>
       <div class="kpi clickable" onclick="dashOpen('feePrev')"><div class="label">Owing From Earlier Terms</div><div class="value" style="color:${m.prevStudents?'var(--bad)':'var(--ok)'};">${m.prevStudents}</div><div class="note">${naira(m.prevTotal)} outstanding</div></div>
@@ -4094,6 +4222,10 @@ async function feeDashDetail(k){
     const list = sortFeeRows(b.cur.filter(r => r.sch));
     const rows = list.map(r => `<tr class="dclick" data-s="${esc(((r.s.name||'')+' '+(r.sch.name||'')).toLowerCase())}" onclick="dashGoStudent('${r.s.id}')"><td>${esc(r.s.name)}</td><td>${esc(classById(r.s.class_id)?.name||'')}</td><td>${esc(r.sch.name)}</td><td class="right mono">${r.sch.percent ?? '—'}%</td><td class="right mono">${naira(r.disc)}</td><td class="right mono">${naira(r.bal)}</td></tr>`).join('');
     return { title: `Students on scholarship &mdash; ${list.length}`, sub: 'Click a pupil to open the record.', controls: dashSearchBox(), body: right(dtable(['Name','Class','Scholarship','% off tuition','Tuition saved','Balance'], rows, 'No student has a scholarship yet.')), go: ['reports','Open Reports'] };
+  }
+  if (k === 'feePaid') {
+    const list = sortFeeRows(m.paidFull);
+    return { title: `Fully paid this term &mdash; ${list.length}`, sub: `${esc(b.term)}. Click a pupil to open the record.`, controls: dashSearchBox(), body: right(dtable(head(false), list.map(r => row(r, false)).join(''), 'Nobody has paid in full yet.')), go: ['reports','Open Reports'] };
   }
   const pick = { feeOwe: m.owe, feePart: m.part }[k];
   if (pick) {
@@ -4620,6 +4752,7 @@ function idIcon(name, mm, ring){
     : `<svg viewBox="0 0 24 24" style="width:${mm}mm;height:${mm}mm;flex:none;">${p}</svg>`;
 }
 function idLaurel(mirror, leftMm){
+  // drawn as an <img> holding its own SVG (mirror built into the picture) so that PDF/Word capture keeps it intact
   let leaves = '';
   for (let i = 0; i < 9; i++) {
     const t = i / 8, x = 62 - 46 * Math.sin(Math.PI * t * 0.95), y = 188 - 172 * t;
@@ -4628,7 +4761,9 @@ function idLaurel(mirror, leftMm){
     leaves += `<ellipse cx="${(x + 7).toFixed(1)}" cy="${(y - 6).toFixed(1)}" rx="5" ry="13" transform="rotate(${(ang + 35).toFixed(0)} ${(x + 7).toFixed(1)} ${(y - 6).toFixed(1)})"/>`;
   }
   const stem = Array.from({ length: 17 }, (_, i) => { const t = i / 16; return `${(62 - 46 * Math.sin(Math.PI * t * 0.95)).toFixed(1)},${(188 - 172 * t).toFixed(1)}`; }).join(' ');
-  return `<svg viewBox="0 0 100 200" style="position:absolute;left:${leftMm}mm;top:17mm;z-index:1;width:15mm;height:30mm;${mirror ? 'transform:scaleX(-1);' : ''}" fill="#C9982E" fill-opacity=".38"><polyline points="${stem}" fill="none" stroke="#C9982E" stroke-opacity=".5" stroke-width="2"/>${leaves}</svg>`;
+  const inner = `<polyline points="${stem}" fill="none" stroke="#C9982E" stroke-opacity=".5" stroke-width="2"/><g fill="#C9982E" fill-opacity=".38">${leaves}</g>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="600" viewBox="0 0 100 200">${mirror ? `<g transform="translate(100 0) scale(-1 1)">${inner}</g>` : inner}</svg>`;
+  return `<img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}" width="300" height="600" style="position:absolute;left:${leftMm}mm;top:17mm;z-index:1;width:15mm;height:30mm;">`;
 }
 function idNameStyle(n){
   const L = String(n || '').length;
