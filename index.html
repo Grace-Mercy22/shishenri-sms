@@ -414,7 +414,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r32'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r33'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -1912,9 +1912,9 @@ async function renderSettingsTab(){
   ${await scholarshipSettingsPanel()}
   <div class="panel">
     <h2>Subjects</h2>
-    <div class="desc">Add or remove subjects per section.</div>
+    <div class="desc">Add, rename, reorder or remove subjects for each section.</div>
     <div class="tabbar" style="margin-bottom:14px;">
-      ${['Nursery','Primary','Secondary'].map(sec => `<button class="tabbtn ${settingsSubjSection===sec?'active':''}" onclick="settingsSubjSection='${sec}';renderTabAsync();">${sec}</button>`).join('')}
+      ${['Nursery','Primary','Secondary'].map(sec => `<button class="tabbtn ${settingsSubjSection===sec?'active':''}" onclick="settingsSubjSection='${sec}';subjEditIdx=null;renderTabAsync();">${sec}</button>`).join('')}
     </div>
     <div id="subjectListContainer">${renderSubjectEditor(settingsSubjSection)}</div>
   </div>
@@ -2271,20 +2271,74 @@ async function gsRun(raw){
 }
 
 let settingsSubjSection = 'Nursery';
+let subjEditIdx = null;
 function renderSubjectEditor(section){
   const list = getSubjects(section);
+  const mv = (dir, i, dis) => `<button class="iconbtn" ${dis ? 'disabled style="opacity:.3;"' : ''} title="${dir < 0 ? 'Move up' : 'Move down'}" onclick="moveSubject('${section}', ${i}, ${dir})">${dir < 0 ? '&#9650;' : '&#9660;'}</button>`;
   return `
+    <div class="desc" style="margin-bottom:6px;">Use the arrows to change the order (the results forms follow this order). Use <strong>Edit</strong> to correct a spelling &mdash; saved scores move to the new name automatically.</div>
     <div style="margin-bottom:12px;">
       ${list.length===0 ? `<div class="desc">No subjects yet for ${section}.</div>` : list.map((subj,i) => `
-        <div class="row" style="justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);">
-          <span>${esc(subj)}</span>
-          <button class="iconbtn" onclick="removeSubject('${section}', ${i})">&times; Remove</button>
+        <div class="row" style="justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);gap:8px;">
+          <span style="display:flex;gap:4px;flex:none;">${mv(-1, i, i === 0)}${mv(1, i, i === list.length - 1)}</span>
+          ${subjEditIdx === i
+            ? `<input id="subjEditInput" value="${esc(subj)}" style="flex:1;max-width:300px;" onkeydown="if(event.key==='Enter'){saveSubjectName('${section}', ${i});} if(event.key==='Escape'){cancelSubjectEdit('${section}');}">
+               <span style="display:flex;gap:4px;flex:none;"><button class="btn small" onclick="saveSubjectName('${section}', ${i})">Save</button><button class="btn small secondary" onclick="cancelSubjectEdit('${section}')">Cancel</button></span>`
+            : `<span style="flex:1;">${esc(subj)}</span>
+               <span style="display:flex;gap:4px;flex:none;"><button class="iconbtn" onclick="editSubjectName('${section}', ${i})">&#9998; Edit</button><button class="iconbtn" onclick="removeSubject('${section}', ${i})">&times; Remove</button></span>`}
         </div>`).join('')}
     </div>
     <div class="row">
       <input id="newSubjInput_${section}" placeholder="New subject name…" style="max-width:260px;" onkeydown="if(event.key==='Enter'){addSubject('${section}');}">
       <button class="btn small" onclick="addSubject('${section}')">+ Add Subject</button>
     </div>`;
+}
+function refreshSubjectEditor(section){
+  const container = document.getElementById('subjectListContainer');
+  if (container) container.innerHTML = renderSubjectEditor(section);
+}
+function editSubjectName(section, i){ subjEditIdx = i; refreshSubjectEditor(section); setTimeout(() => { const el = document.getElementById('subjEditInput'); if (el) { el.focus(); el.select(); } }, 30); }
+function cancelSubjectEdit(section){ subjEditIdx = null; refreshSubjectEditor(section); }
+async function moveSubject(section, i, dir){
+  ensureSubjectsInitialised();
+  const list = [...SETTINGS_CACHE.subjects[section]], j = i + dir;
+  if (j < 0 || j >= list.length) return;
+  [list[i], list[j]] = [list[j], list[i]];
+  SETTINGS_CACHE.subjects[section] = list; subjEditIdx = null;
+  refreshSubjectEditor(section);
+  await persistSubjects();
+  await logAudit('update', 'subject', section, { reordered: list[j] });
+}
+async function saveSubjectName(section, i){
+  ensureSubjectsInitialised();
+  const old = SETTINGS_CACHE.subjects[section][i];
+  const val = (document.getElementById('subjEditInput')?.value || '').trim();
+  if (!val) { toast('The subject name cannot be empty.'); return; }
+  if (val === old) { cancelSubjectEdit(section); return; }
+  if (SETTINGS_CACHE.subjects[section].some((x, k) => k !== i && x.toLowerCase() === val.toLowerCase())) { toast('Another subject in this list already has that name.'); return; }
+  const list = [...SETTINGS_CACHE.subjects[section]]; list[i] = val;
+  SETTINGS_CACHE.subjects[section] = list; subjEditIdx = null;
+  refreshSubjectEditor(section);
+  await persistSubjects();
+  // Scores already saved under the old name move to the new name (only pupils in this section)
+  let moved = 0, failed = 0;
+  try {
+    const stu = await fetchEveryRow('students', 'id,class_id');
+    const inSection = new Set(stu.filter(x => feeSectionFor(x.class_id) === section).map(x => x.id));
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await sb.from('student_results').select('student_id,term,subjects').order('student_id').order('term').range(from, from + 999);
+      if (error) throw error; rows.push(...(data || [])); if (!data || data.length < 1000) break;
+    }
+    for (const r of rows) {
+      if (!inSection.has(r.student_id) || !r.subjects || !Object.prototype.hasOwnProperty.call(r.subjects, old) || Object.prototype.hasOwnProperty.call(r.subjects, val)) continue;
+      const next = {}; Object.keys(r.subjects).forEach(k => { next[k === old ? val : k] = r.subjects[k]; });
+      const { data: done, error } = await sb.from('student_results').update({ subjects: next }).eq('student_id', r.student_id).eq('term', r.term).select('student_id');
+      if (error || !done || !done.length) failed++; else moved++;
+    }
+  } catch(e) { failed++; }
+  await logAudit('update', 'subject', section, { renamed_from: old, renamed_to: val, results_moved: moved, results_failed: failed });
+  toast(`Subject renamed to "${val}".` + (moved ? ` ${moved} saved result record(s) moved to the new name.` : '') + (failed ? ` Warning: ${failed} result record(s) could not be updated.` : ''));
 }
 function ensureSubjectsInitialised(){
   SETTINGS_CACHE.subjects = SETTINGS_CACHE.subjects || {};
@@ -2304,7 +2358,7 @@ async function addSubject(section){
   if (!val) return;
   ensureSubjectsInitialised();
   if (SETTINGS_CACHE.subjects[section].includes(val)) { toast('That subject is already in the list.'); return; }
-  SETTINGS_CACHE.subjects[section] = [...SETTINGS_CACHE.subjects[section], val];
+  SETTINGS_CACHE.subjects[section] = [...SETTINGS_CACHE.subjects[section], val]; subjEditIdx = null;
   const container = document.getElementById('subjectListContainer');
   if (container) container.innerHTML = renderSubjectEditor(section);
   await logAudit('create', 'subject', section, { name: val });
@@ -2314,7 +2368,7 @@ async function addSubject(section){
 async function removeSubject(section, index){
   ensureSubjectsInitialised();
   const removed = SETTINGS_CACHE.subjects[section][index];
-  SETTINGS_CACHE.subjects[section] = SETTINGS_CACHE.subjects[section].filter((_,i)=>i!==index);
+  SETTINGS_CACHE.subjects[section] = SETTINGS_CACHE.subjects[section].filter((_,i)=>i!==index); subjEditIdx = null;
   const container = document.getElementById('subjectListContainer');
   if (container) container.innerHTML = renderSubjectEditor(section);
   await logAudit('delete', 'subject', section, { name: removed });
@@ -3753,7 +3807,7 @@ async function renderDocuments(){
       ${docs.map(d => `<tr>
         <td><strong>${esc(d.title)}</strong></td><td><span class="pill muted">${esc(d.category)}</span></td>
         <td class="mono">${(d.uploaded_at||'').slice(0,10)}</td><td>${esc(d.uploaded_by||'—')}</td>
-        <td class="right"><a class="btn small ghost" href="${d.url}" target="_blank" rel="noopener">View</a> ${canDoc ? `<button class="iconbtn" onclick="deleteDocument('${d.id}')">Delete</button>` : ''}</td>
+        <td class="right"><a class="btn small ghost" href="${d.url}" target="_blank" rel="noopener">View</a> ${canDoc ? `<button class="iconbtn" onclick="openDocumentEdit('${d.id}')">Edit</button> <button class="iconbtn" onclick="deleteDocument('${d.id}')">Delete</button>` : ''}</td>
       </tr>`).join('')}
     </table></div>`}
   </div>`;
@@ -3785,6 +3839,27 @@ async function handleDocumentUpload(){
     await logAudit('upload', 'documents', title, {});
     closeModal(); toast('Document uploaded.'); renderTabAsync();
   } catch(e) { document.getElementById('docUploadBtn').disabled = false; document.getElementById('docUploadStatus').textContent = 'Could not upload: ' + e.message; }
+}
+async function openDocumentEdit(id){
+  if (!hasPerm('manage_documents')) { toast('You do not have permission to edit documents.'); return; }
+  const { data: d } = await sb.from('documents').select('*').eq('id', id).maybeSingle();
+  if (!d) return;
+  const cats = DOCUMENT_CATEGORIES.includes(d.category) ? DOCUMENT_CATEGORIES : [d.category, ...DOCUMENT_CATEGORIES].filter(Boolean);
+  openModal(`
+    <h3>Edit Document</h3>
+    <div class="msub">Correct the title or category. The uploaded file itself stays as it is; to replace the file, upload a new one.</div>
+    <div class="field"><label>Title *</label><input id="doc_e_title" value="${esc(d.title)}"></div>
+    <div class="field"><label>Category</label><select id="doc_e_category">${cats.map(c=>`<option ${c===d.category?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
+    <div id="docEditStatus" class="desc"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="saveDocumentEdit('${id}')">Save changes</button></div>`);
+}
+async function saveDocumentEdit(id){
+  const title = document.getElementById('doc_e_title').value.trim(), category = document.getElementById('doc_e_category').value;
+  if (!title) { document.getElementById('docEditStatus').textContent = 'The title cannot be empty.'; return; }
+  const { data, error } = await sb.from('documents').update({ title, category }).eq('id', id).select('id');
+  if (error || !data || !data.length) { document.getElementById('docEditStatus').textContent = 'Could not save' + (error ? ': ' + error.message : ' (not allowed).'); return; }
+  await logAudit('update', 'documents', id, { title, category });
+  closeModal(); toast('Document updated.'); renderTabAsync();
 }
 async function deleteDocument(id){
   if (!hasPerm('manage_documents')) { toast('You do not have permission to delete documents.'); return; }
@@ -4527,91 +4602,285 @@ async function generateDailyAttendanceReport(format){
 // =====================================================================
 // ID CARDS
 // =====================================================================
+// =====================================================================
+// ID CARDS — CR80 (85.60 x 53.98 mm, landscape, 3 mm corners). Front + back.
+// The QR code / verification token code is unchanged: it still uses verify_token + verifyUrlFor + makeQrDataUrl.
+// =====================================================================
+const ID_W = 85.6, ID_H = 53.98;
+const ID_ICON = {
+  pin: 'M12 2a6 6 0 0 0-6 6c0 4.5 6 12 6 12s6-7.5 6-12a6 6 0 0 0-6-6zm0 8.2a2.2 2.2 0 1 1 0-4.4 2.2 2.2 0 0 1 0 4.4z',
+  phone: 'M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z',
+  mail: 'M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z',
+  shield: 'M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z'
+};
+function idIcon(name, mm, ring){
+  const p = `<path d="${ID_ICON[name]}" fill="${ring ? '#fff' : '#C9982E'}"/>`;
+  return ring
+    ? `<svg viewBox="0 0 24 24" style="width:${mm}mm;height:${mm}mm;flex:none;"><circle cx="12" cy="12" r="12" fill="#C9982E"/><g transform="translate(5 5) scale(.58)">${p}</g></svg>`
+    : `<svg viewBox="0 0 24 24" style="width:${mm}mm;height:${mm}mm;flex:none;">${p}</svg>`;
+}
+function idLaurel(mirror, leftMm){
+  let leaves = '';
+  for (let i = 0; i < 9; i++) {
+    const t = i / 8, x = 62 - 46 * Math.sin(Math.PI * t * 0.95), y = 188 - 172 * t;
+    const ang = -50 + t * 70;
+    leaves += `<ellipse cx="${(x - 9).toFixed(1)}" cy="${y.toFixed(1)}" rx="6" ry="15" transform="rotate(${(ang - 25).toFixed(0)} ${(x - 9).toFixed(1)} ${y.toFixed(1)})"/>`;
+    leaves += `<ellipse cx="${(x + 7).toFixed(1)}" cy="${(y - 6).toFixed(1)}" rx="5" ry="13" transform="rotate(${(ang + 35).toFixed(0)} ${(x + 7).toFixed(1)} ${(y - 6).toFixed(1)})"/>`;
+  }
+  const stem = Array.from({ length: 17 }, (_, i) => { const t = i / 16; return `${(62 - 46 * Math.sin(Math.PI * t * 0.95)).toFixed(1)},${(188 - 172 * t).toFixed(1)}`; }).join(' ');
+  return `<svg viewBox="0 0 100 200" style="position:absolute;left:${leftMm}mm;top:17mm;z-index:1;width:15mm;height:30mm;${mirror ? 'transform:scaleX(-1);' : ''}" fill="#C9982E" fill-opacity=".38"><polyline points="${stem}" fill="none" stroke="#C9982E" stroke-opacity=".5" stroke-width="2"/>${leaves}</svg>`;
+}
+function idNameStyle(n){
+  const L = String(n || '').length;
+  return L <= 15 ? 12.5 : L <= 20 ? 11 : L <= 26 ? 9.5 : L <= 34 ? 8.5 : 7.5;
+}
+// Everything printed on a card, for one staff member or pupil
+async function idCardInfo(type, rec, ctx){
+  ctx = ctx || {};
+  const isStaff = type === 'staff';
+  let title = '', title2 = '', dept = '';
+  if (isStaff) {
+    let rankName = '';
+    try { if (rec.career_rank) { if (!(CAREER && CAREER.ranks && CAREER.ranks.length)) await loadCareerRefs(); const r = rankObj(rec.career_rank); rankName = r ? r.designation : ''; } } catch(e) {}
+    let pors = ctx.pors;
+    if (!pors) { try { const r = await sb.from('por_assignments').select('*').eq('staff_id', rec.id); pors = r.data || []; } catch(e) { pors = []; } }
+    let porNames = [];
+    try { porNames = pors.filter(a => a.staff_id === rec.id && porState(a) === 'active').map(a => (positionById(a.position_id) || {}).name).filter(Boolean); } catch(e) {}
+    title = rankName || rec.role || 'Staff';
+    title2 = porNames.length ? porNames.join(', ') : ((rankName && rec.role && rec.role.toLowerCase() !== rankName.toLowerCase()) ? rec.role : '');
+    dept = rec.department || '';
+  } else {
+    title = classById(rec.class_id)?.name || 'Pupil';
+  }
+  const qr = rec.verify_token ? (ctx.qr !== undefined ? ctx.qr : await makeQrDataUrl(verifyUrlFor(rec.verify_token))) : null;
+  return { isStaff, name: rec.name || '', title, title2, dept, idLabel: isStaff ? 'Staff ID' : 'Student ID', idNumber: (isStaff ? rec.staff_id : rec.student_id) || '—',
+    photo: rec.photo_url || '', initial: (rec.name || '?').charAt(0), phone: isStaff ? (rec.phone || '') : (rec.parent_phone || ''),
+    dateLabel: isStaff ? 'Date of Engagement' : 'Date of Admission', dateVal: isStaff ? rec.date_joined : rec.admission_date, qr };
+}
+function idCardHtml(i){
+  const base = `width:${ID_W}mm;height:${ID_H}mm;box-sizing:border-box;border-radius:3mm;overflow:hidden;position:relative;background:#fff;font-family:Inter,Arial,sans-serif;margin:0 auto;border:0.2mm solid #d6d6d6;color:#111;`;
+  const serif = "font-family:'Source Serif 4',Georgia,'Times New Roman',serif;";
+  const pattern = `<defs><pattern id="idgp" width="40" height="14" patternUnits="userSpaceOnUse"><path d="M0 7 Q10 0 20 7 T40 7" fill="none" stroke="#16345E" stroke-opacity=".055" stroke-width=".9"/></pattern>
+    <linearGradient id="idnavy" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1b3d6e"/><stop offset="1" stop-color="#0a1f44"/></linearGradient>
+    <linearGradient id="idgold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#b8861f"/><stop offset=".5" stop-color="#f0d27a"/><stop offset="1" stop-color="#b8861f"/></linearGradient>
+    <linearGradient id="idred" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8e1b2c"/><stop offset="1" stop-color="#6a1020"/></linearGradient></defs>`;
+  const nm = idNameStyle(i.name);
+  const t1 = String(i.title).length > 30 ? 6.8 : String(i.title).length > 24 ? 7.4 : 8.2;
+  const front = `<div class="idcard" style="${base}">
+    <svg viewBox="0 0 856 540" preserveAspectRatio="none" style="position:absolute;left:0;top:0;width:100%;height:100%;">${pattern}
+      <rect width="856" height="540" fill="url(#idgp)"/>
+      <path d="M0 0H856V92C640 152 360 182 0 184Z" fill="url(#idnavy)"/>
+      <path d="M0 184C360 182 640 152 856 92" fill="none" stroke="url(#idgold)" stroke-width="5"/>
+      <path d="M0 194C360 192 640 162 856 102" fill="none" stroke="#C9982E" stroke-opacity=".55" stroke-width="1.6"/>
+      <path d="M0 184V222C120 212 240 200 330 190C200 192 100 190 0 184Z" fill="url(#idgold)" opacity=".9"/>
+      <path d="M0 425H856" stroke="#C9982E" stroke-opacity=".5" stroke-width="1.5"/>
+      <rect y="485" width="856" height="55" fill="#7d1727"/></svg>
+    <img src="${LOGO_DATA_URI}" style="position:absolute;left:34mm;top:15.5mm;width:36mm;height:auto;opacity:.06;z-index:1;">
+    <img src="${LOGO_DATA_URI}" style="position:absolute;left:3.6mm;top:1.6mm;height:14.4mm;width:auto;z-index:3;">
+    <div style="position:absolute;left:19.6mm;top:3.4mm;width:0.35mm;height:9.6mm;background:#C9982E;z-index:3;"></div>
+    <div style="position:absolute;left:21.6mm;top:2.6mm;right:3mm;z-index:3;white-space:nowrap;"><div style="${serif}color:#fff;font-weight:700;font-size:11.6pt;letter-spacing:.02em;line-height:1.1;">SHISHENRI SCHOOLS</div>
+      <div style="${serif}color:#E6BE5A;font-style:italic;font-size:7.4pt;margin-top:.9mm;">&ldquo;Breath of Excellence&rdquo;</div></div>
+    ${i.photo ? `<img src="${esc(i.photo)}" style="position:absolute;left:3.8mm;top:20.4mm;width:17mm;height:21mm;object-fit:cover;border-radius:2mm;border:0.5mm solid #C9982E;box-sizing:border-box;z-index:3;background:#fff;">`
+      : `<div style="position:absolute;left:3.8mm;top:20.4mm;width:17mm;height:21mm;border-radius:2mm;border:0.5mm solid #C9982E;box-sizing:border-box;background:#F5F2EA;display:flex;align-items:center;justify-content:center;color:#8a6d1f;font-size:20pt;font-weight:700;z-index:3;">${esc(i.initial)}</div>`}
+    <div style="position:absolute;left:24.4mm;right:4mm;top:19.6mm;height:22.6mm;display:flex;flex-direction:column;justify-content:center;z-index:3;overflow:hidden;">
+      <div style="${serif}font-weight:700;font-size:${nm}pt;color:#16345E;line-height:1.1;max-height:9.2mm;overflow:hidden;word-break:break-word;">${esc(i.name)}</div>
+      <div style="font-weight:700;font-size:${t1}pt;color:#7A1F2B;margin-top:.7mm;line-height:1.15;">${esc(i.title)}</div>
+      ${i.title2 ? `<div style="font-weight:600;font-size:6.4pt;color:#16345E;line-height:1.15;margin-top:.3mm;max-height:5mm;overflow:hidden;">${esc(i.title2)}</div>` : ''}
+      <div style="width:24mm;height:0.3mm;background:#C9982E;margin:1.3mm 0;"></div>
+      <div style="font-size:6.2pt;color:#444;line-height:1.1;">${i.idLabel}</div>
+      <div style="font-size:10.5pt;font-weight:800;color:#111;letter-spacing:.02em;line-height:1.15;">${esc(i.idNumber)}</div>
+      ${i.dept ? `<div style="font-size:5.6pt;color:#666;margin-top:.4mm;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(i.dept)}</div>` : ''}
+    </div>
+    <div style="position:absolute;left:0;right:0;top:42.5mm;height:6mm;display:flex;align-items:center;justify-content:space-between;padding:0 4.5mm;z-index:3;font-size:6.2pt;color:#222;">
+      <span style="display:flex;align-items:center;gap:1.2mm;">${idIcon('pin', 3.4, true)}Sabon Gida, Kokona LGA, Nasarawa State</span>
+      <span style="display:flex;align-items:center;gap:1.2mm;border-left:0.25mm solid #C9982E;padding-left:2.2mm;">${i.phone ? idIcon('phone', 3.4, true) + esc(i.phone) : ''}</span>
+    </div>
+    <div style="position:absolute;left:0;right:0;bottom:0;height:5.5mm;display:flex;align-items:center;justify-content:center;z-index:3;color:#fff;font-weight:600;font-size:6.4pt;letter-spacing:.03em;">IF FOUND, PLEASE RETURN TO SHISHENRI SCHOOLS</div>
+  </div>`;
+  const back = `<div class="idcard" style="${base}">
+    <svg viewBox="0 0 856 540" preserveAspectRatio="none" style="position:absolute;left:0;top:0;width:100%;height:100%;">${pattern}
+      <rect width="856" height="540" fill="url(#idgp)"/>
+      <path d="M0 0H856V104C620 150 240 152 0 104Z" fill="url(#idnavy)"/>
+      <path d="M0 104C240 152 620 150 856 104" fill="none" stroke="url(#idgold)" stroke-width="5"/>
+      <path d="M0 114C240 162 620 160 856 114" fill="none" stroke="#C9982E" stroke-opacity=".5" stroke-width="1.6"/>
+      <path d="M0 540V430C250 462 600 462 856 430V540Z" fill="url(#idnavy)"/>
+      <path d="M0 430C250 462 600 462 856 430" fill="none" stroke="url(#idgold)" stroke-width="5"/></svg>
+    <img src="${LOGO_DATA_URI}" style="position:absolute;left:25.8mm;top:13mm;width:34mm;height:auto;opacity:.07;z-index:1;">
+    ${idLaurel(false, 5)}${idLaurel(true, 65.6)}
+    <div style="position:absolute;left:0;right:0;top:2.4mm;text-align:center;z-index:3;"><div style="${serif}color:#fff;font-weight:700;font-size:11.6pt;letter-spacing:.02em;line-height:1.1;">SHISHENRI SCHOOLS</div>
+      <div style="display:flex;align-items:center;justify-content:center;gap:2mm;margin-top:1mm;"><span style="width:9mm;height:0.3mm;background:#C9982E;"></span><span style="color:#E6BE5A;font-weight:700;font-size:6.4pt;letter-spacing:.2em;">${i.isStaff ? 'STAFF' : 'STUDENT'} IDENTITY CARD</span><span style="width:9mm;height:0.3mm;background:#C9982E;"></span></div></div>
+    <div style="position:absolute;left:0;right:0;top:14.6mm;text-align:center;z-index:3;">
+      <div style="font-size:6.4pt;color:#16345E;font-weight:600;">${i.dateLabel}</div>
+      <div style="display:inline-block;margin-top:.6mm;border:0.35mm solid #C9982E;border-radius:3mm;padding:.5mm 4mm;background:rgba(255,255,255,.9);font-size:8.2pt;font-weight:800;color:#16345E;">${fmtDate(i.dateVal)}</div></div>
+    <div style="position:absolute;left:0;right:0;top:23mm;display:flex;justify-content:center;z-index:3;">
+      ${i.qr ? `<img src="${i.qr}" style="width:17mm;height:17mm;background:#fff;padding:.8mm;box-sizing:content-box;">` : `<div style="width:17mm;height:17mm;border:0.2mm dashed #bbb;font-size:5pt;color:#999;display:flex;align-items:center;justify-content:center;background:#fff;">QR unavailable</div>`}</div>
+    <div style="position:absolute;left:0;right:0;top:42.4mm;text-align:center;z-index:3;font-size:6.2pt;color:#16345E;font-weight:600;">Scan to verify this card is genuine</div>
+    <div style="position:absolute;left:0;right:0;top:46.2mm;text-align:center;z-index:3;color:#fff;font-size:5pt;line-height:1.15;">
+      <div style="display:flex;align-items:center;justify-content:center;gap:1mm;">${idIcon('shield', 2.6, false)}<span>This card is the property of Shishenri Schools and is not transferable.</span></div>
+      <div style="display:flex;align-items:center;justify-content:center;gap:2.2mm;margin-top:.9mm;font-size:5.2pt;"><span style="display:flex;align-items:center;gap:.8mm;">${idIcon('phone', 2.6, false)}0811 637 9329 | 0903 445 6147</span><span style="display:flex;align-items:center;gap:.8mm;">${idIcon('mail', 2.6, false)}shishenrischools@gmail.com</span></div>
+    </div>
+  </div>`;
+  return { front, back };
+}
+let LAST_ID_CARD = null;
 async function printIdCard(type, id){
   const isStaff = type === 'staff';
   const { data: rec } = await sb.from(isStaff?'staff':'students').select('*').eq('id', id).maybeSingle();
   if (!rec) return;
   await loadSettings();
-  const idNumber = isStaff ? (rec.staff_id||'—') : (rec.student_id||'—');
-  const subtitle = isStaff ? (rec.role||'Staff') : (classById(rec.class_id)?.name||'Pupil');
-  const dateLabel = isStaff ? 'Date of Engagement' : 'Date of Admission';
-  const dateVal = isStaff ? rec.date_joined : rec.admission_date;
-  const qr = rec.verify_token ? await makeQrDataUrl(verifyUrlFor(rec.verify_token)) : null;
-  const phone = isStaff ? (rec.phone||'') : (rec.parent_phone||'');
-  const box = 'width:85.6mm;height:53.98mm;box-sizing:border-box;border-radius:3mm;overflow:hidden;display:flex;flex-direction:column;font-family:Inter,Arial,sans-serif;background:#fff;border:0.2mm solid #cfcfcf;margin:0 auto;';
-  const front = `<div class="idcard" style="${box}">
-    <div style="background:linear-gradient(135deg,#16345E,#0f2647);height:11mm;flex:none;padding:0 4mm;display:flex;align-items:center;gap:2.5mm;">
-      <img src="${LOGO_DATA_URI}" style="height:8mm;width:auto;">
-      <div style="color:#fff;line-height:1.25;"><div style="font-weight:700;font-size:9pt;">SHISHENRI SCHOOLS</div><div style="font-size:5.8pt;color:#C9982E;font-style:italic;">"Breath of Excellence"</div></div>
-    </div>
-    <div style="flex:1;min-height:0;padding:0 4mm;display:flex;align-items:center;gap:4mm;">
-      ${rec.photo_url ? `<img src="${rec.photo_url}" style="width:17mm;height:21mm;object-fit:cover;border-radius:1.2mm;border:0.2mm solid #ddd;flex:none;">` : `<div style="width:17mm;height:21mm;flex:none;border-radius:1.2mm;border:0.2mm solid #ddd;background:#F5F2EA;display:flex;align-items:center;justify-content:center;color:#8a6d1f;font-size:16pt;font-weight:700;">${esc((rec.name||'?').charAt(0))}</div>`}
-      <div style="flex:1;min-width:0;">
-        <div style="font-weight:700;font-size:10pt;color:#16345E;line-height:1.15;">${esc(rec.name)}</div>
-        <div style="font-size:7.5pt;color:#7A1F2B;font-weight:600;margin-top:0.6mm;">${esc(subtitle)}</div>
-        <div style="font-size:6pt;color:#555;margin-top:2mm;">${isStaff?'Staff ID':'Student ID'}</div>
-        <div style="font-size:9pt;font-weight:700;color:#111;font-family:monospace;">${esc(idNumber)}</div>
+  const info = await idCardInfo(type, rec);
+  const { front, back } = idCardHtml(info);
+  LAST_ID_CARD = { front, back, name: rec.name, isStaff, type, id };
+  const note = info.qr ? '' : `<div class="bignote" style="margin-bottom:10px;">The QR code could not be created (the QR library may not have loaded, or the database update has not been run yet).</div>`;
+  const btn = (cls, fn, label) => `<button class="btn small ${cls}" onclick="${fn}">${label}</button>`;
+  printHTML(`${note}<div class="no-print" style="text-align:center;margin-bottom:12px;">
+      <div class="row" style="justify-content:center;gap:6px;flex-wrap:wrap;">
+        ${btn('', "downloadIdCardPdf('both')", 'Download ID card PDF (front + back)')}
+        ${btn('secondary', "downloadIdCardPdf('front')", 'Front only')}
+        ${btn('secondary', "downloadIdCardPdf('back')", 'Back only')}
+        ${btn('secondary', "openIdSheetDialog('${type}')", 'A4 print sheet (many cards)')}
+        ${btn('ghost', "printIdCardExact('both')", 'Print / Save as PDF at exact size')}
       </div>
-    </div>
-    <div style="background:#F5F2EA;height:5.5mm;flex:none;padding:0 4mm;display:flex;align-items:center;justify-content:space-between;font-size:5.6pt;color:#666;border-top:0.2mm solid #e5e0d0;">
-      <span>Sabon Gida, Kokona L.G.A., Nasarawa State</span><span>${esc(phone)}</span>
-    </div>
-    <div style="background:#7A1F2B;height:4mm;flex:none;display:flex;align-items:center;justify-content:center;font-size:5.6pt;color:#fff;">IF FOUND, PLEASE RETURN TO SHISHENRI SCHOOLS</div>
-  </div>`;
-  const back = `<div class="idcard" style="${box}">
-    <div style="background:#16345E;height:7mm;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-size:7pt;font-weight:700;letter-spacing:.06em;">SHISHENRI SCHOOLS &middot; ${isStaff?'STAFF':'STUDENT'} IDENTITY CARD</div>
-    <div style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;">
-      <div style="font-size:6pt;color:#777;">${dateLabel}</div>
-      <div style="font-size:8pt;font-weight:700;color:#111;margin-bottom:1.2mm;">${fmtDate(dateVal)}</div>
-      ${qr ? `<img src="${qr}" style="width:19mm;height:19mm;">` : `<div style="width:19mm;height:19mm;border:0.2mm dashed #bbb;font-size:5pt;color:#999;display:flex;align-items:center;justify-content:center;">QR unavailable</div>`}
-      <div style="font-size:5.6pt;color:#555;margin-top:1mm;">Scan to verify this card is genuine</div>
-    </div>
-    <div style="background:#F5F2EA;height:8mm;flex:none;padding:0 4mm;display:flex;align-items:center;justify-content:center;font-size:5pt;color:#666;text-align:center;line-height:1.4;border-top:0.2mm solid #e5e0d0;">This card is the property of ShiShenri Schools and is not transferable. Tel: 0811 637 9329 &middot; 0903 445 6147 &middot; shishenrischools@gmail.com</div>
-  </div>`;
-  LAST_ID_CARD = { front, back, name: rec.name, isStaff };
-  const note = qr ? '' : `<div class="bignote" style="margin-bottom:10px;">The QR code could not be created (the QR library may not have loaded, or the database update has not been run yet).</div>`;
-  printHTML(`${note}<div class="no-print" style="text-align:center;margin-bottom:10px;"><button class="btn small" onclick="printIdCardExact()">Print at exact card size (85.6 &times; 53.98 mm)</button> <button class="btn small secondary" onclick="downloadIdCardPdf()">Card-size PDF (2 pages)</button><div class="desc" style="margin-top:4px;">Landscape CR80 card, 3 mm corners, front and back on separate pages for double-sided printing. In the print dialog set Scale to 100% and Margins to None.</div></div>
+      <div class="desc" style="margin-top:6px;">CR80 card, 85.6 &times; 53.98 mm, landscape. Each PDF page is exactly card size: print at <strong>100% / Actual size</strong>, double-sided. Lost card? Use &ldquo;Reissue ID&rdquo; so the old QR code stops verifying.</div></div>
     <div style="text-align:center;font-size:10px;color:#888;margin-bottom:4px;">FRONT</div>${front}<div style="text-align:center;font-size:10px;color:#888;margin:16px 0 4px;">BACK</div>${back}`,
     `${isStaff?'Staff':'Student'} ID Card — ${esc(rec.name)}`);
 }
-let LAST_ID_CARD = null;
-function printIdCardExact(){
-  if (!LAST_ID_CARD) return;
+// Vector printing (no libraries): opens the print dialog with page size = card size
+function idPrintFrame(css, bodyHtml){
   const fr = document.createElement('iframe'); fr.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
   document.body.appendChild(fr);
   const d = fr.contentWindow.document;
-  d.open(); d.write(`<!doctype html><html><head><title>ID Card</title><style>
-    @page { size: 85.6mm 53.98mm; margin: 0; }
-    html, body { margin: 0; padding: 0; background: #fff; }
-    .pg { width: 85.6mm; height: 53.98mm; overflow: hidden; page-break-after: always; break-after: page; }
-    .pg:last-child { page-break-after: auto; break-after: auto; }
-    .idcard { margin: 0 !important; border: 0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  </style></head><body><div class="pg">${LAST_ID_CARD.front}</div><div class="pg">${LAST_ID_CARD.back}</div></body></html>`); d.close();
-  const go = () => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch(e) { toast('Could not open the print dialog.'); } setTimeout(() => fr.remove(), 4000); };
-  setTimeout(go, 500);
+  d.open(); d.write(`<!doctype html><html><head><title>ShiShenri ID</title><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Source+Serif+4:wght@600;700&display=swap" rel="stylesheet"><style>
+    html,body{margin:0;padding:0;background:#fff;} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .idcard{margin:0 !important;border:0 !important;} ${css}</style></head><body>${bodyHtml}</body></html>`); d.close();
+  setTimeout(() => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch(e) { toast('Could not open the print dialog.'); } setTimeout(() => fr.remove(), 5000); }, 900);
 }
-async function downloadIdCardPdf(){
+function printIdCardExact(which){
   if (!LAST_ID_CARD) return;
-  if (!window.jspdf || !window.html2canvas) { toast('PDF engine did not load — use "Print at exact card size" instead.'); return; }
+  const pgs = (which === 'front' ? [LAST_ID_CARD.front] : which === 'back' ? [LAST_ID_CARD.back] : [LAST_ID_CARD.front, LAST_ID_CARD.back]);
+  idPrintFrame(`@page{size:${ID_W}mm ${ID_H}mm;margin:0;} .pg{width:${ID_W}mm;height:${ID_H}mm;overflow:hidden;page-break-after:always;break-after:page;} .pg:last-child{page-break-after:auto;break-after:auto;}`,
+    pgs.map(h => `<div class="pg">${h}</div>`).join(''));
+}
+async function idCardCanvas(html, scale){
+  const c = document.createElement('div');
+  c.style.cssText = 'position:fixed;left:-9999px;top:0;background:#fff;';
+  c.innerHTML = html; document.body.appendChild(c);
+  try {
+    await inlineRemoteImages(c);
+    const el = c.firstElementChild; el.style.border = '0'; el.style.margin = '0';
+    return await window.html2canvas(el, { scale: scale || 5, backgroundColor: '#ffffff', useCORS: true, allowTaint: false });
+  } finally { document.body.removeChild(c); }
+}
+async function downloadIdCardPdf(which){
+  if (!LAST_ID_CARD) return;
+  if (!window.jspdf || !window.html2canvas) { toast('PDF engine did not load — use "Print / Save as PDF at exact size" instead.'); return; }
   toast('Generating card PDF…');
   try {
     const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({ unit: 'mm', format: [85.6, 53.98], orientation: 'landscape' });
-    let first = true;
-    for (const html of [LAST_ID_CARD.front, LAST_ID_CARD.back]) {
-      const c = document.createElement('div');
-      c.style.cssText = 'position:fixed;left:-9999px;top:0;background:#fff;';
-      c.innerHTML = html; document.body.appendChild(c);
-      await inlineRemoteImages(c);
-      const el = c.firstElementChild; el.style.border = '0'; el.style.borderRadius = '0';
-      const canvas = await window.html2canvas(el, { scale: 5, backgroundColor: '#ffffff', useCORS: true, allowTaint: false });
-      document.body.removeChild(c);
-      if (!first) pdf.addPage([85.6, 53.98], 'landscape'); first = false;
-      pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 85.6, 53.98);
+    const pdf = new jsPDF({ unit: 'mm', format: [ID_W, ID_H], orientation: 'landscape' });
+    const pgs = which === 'front' ? [LAST_ID_CARD.front] : which === 'back' ? [LAST_ID_CARD.back] : [LAST_ID_CARD.front, LAST_ID_CARD.back];
+    for (let k = 0; k < pgs.length; k++) {
+      const canvas = await idCardCanvas(pgs[k], 5);   // 5x = about 480 dpi
+      if (k) pdf.addPage([ID_W, ID_H], 'landscape');
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.97), 'JPEG', 0, 0, ID_W, ID_H);
     }
-    pdf.save('ID_Card_' + String(LAST_ID_CARD.name || 'card').replace(/[^\w]+/g, '_') + '.pdf');
+    pdf.save('ID_Card_' + (which === 'both' ? '' : which + '_') + String(LAST_ID_CARD.name || 'card').replace(/[^\w]+/g, '_') + '.pdf');
+    toast('ID card PDF downloaded.');
   } catch(e) { toast('Could not make the PDF: ' + e.message); }
+}
+// ---- A4 sheets of many cards ----
+// 2 columns x 4 rows = 8 cards per page. Fronts page, then the matching backs page with the columns swapped
+// (so that "flip on long edge" duplex printing lines every back up behind its front).
+const SHEET = { cols: 2, rows: 4, gx: 6, gy: 6, W: 210, H: 297 };
+function sheetPos(idx, mirror){
+  const per = SHEET.cols * SHEET.rows, k = idx % per, r = Math.floor(k / SHEET.cols); let c = k % SHEET.cols;
+  if (mirror) c = SHEET.cols - 1 - c;
+  const gw = SHEET.cols * ID_W + (SHEET.cols - 1) * SHEET.gx, gh = SHEET.rows * ID_H + (SHEET.rows - 1) * SHEET.gy;
+  return { x: (SHEET.W - gw) / 2 + c * (ID_W + SHEET.gx), y: (SHEET.H - gh) / 2 + r * (ID_H + SHEET.gy) + 4 };
+}
+let SHEET_CARDS = [];
+async function openIdSheetDialog(type){
+  const isStaff = type === 'staff';
+  await loadSettings();
+  const { data } = await sb.from(isStaff ? 'staff' : 'students').select('*');
+  const list = (data || []).filter(isStaff ? isActiveStaff : isActiveStudent).sort((a, b) => String(a.name || '').localeCompare(b.name || ''));
+  window.__idSheetList = list; window.__idSheetType = type;
+  const classSel = isStaff ? '' : `<select id="ids_class" onchange="idSheetFilter()"><option value="ALL">All classes</option>${CLASSES.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>`;
+  openModal(`<h3>A4 print sheet — ${isStaff ? 'staff' : 'student'} ID cards</h3>
+    <div class="msub">Tick the people to include (8 cards per A4 page, cutting guides, backs on the next page, aligned for double-sided printing). Maximum 40 per sheet.</div>
+    <div class="row" style="margin-bottom:8px;">${classSel}<button class="btn small secondary" onclick="idSheetAll(true)">Select all shown</button><button class="btn small secondary" onclick="idSheetAll(false)">Clear</button></div>
+    <div id="idsList" style="max-height:38vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 10px;"></div>
+    <div id="idsStatus" class="desc" style="margin-top:8px;"></div>
+    <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Close</button>
+      <button class="btn secondary" onclick="buildIdSheet('print')">Print / Save as PDF (vector)</button>
+      <button class="btn" onclick="buildIdSheet('pdf')">Download A4 PDF</button></div>`, true);
+  idSheetFilter();
+}
+function idSheetFilter(){
+  const type = window.__idSheetType, cls = document.getElementById('ids_class')?.value || 'ALL';
+  const shown = window.__idSheetList.filter(r => type === 'staff' || cls === 'ALL' || r.class_id === cls);
+  document.getElementById('idsList').innerHTML = shown.map(r => `<label style="display:flex;gap:8px;align-items:center;padding:3px 0;font-size:13px;"><input type="checkbox" class="ids_cb" style="width:auto;" value="${r.id}">${esc(r.name)} <span style="color:var(--grey);">${esc((type === 'staff' ? r.staff_id : r.student_id) || '')}${type === 'staff' ? '' : ' · ' + esc(classById(r.class_id)?.name || '')}</span></label>`).join('') || '<div class="desc">Nobody to show.</div>';
+}
+function idSheetAll(on){ document.querySelectorAll('.ids_cb').forEach(c => { c.checked = on; }); }
+async function buildIdSheet(mode){
+  const type = window.__idSheetType, ids = [...document.querySelectorAll('.ids_cb:checked')].map(c => c.value);
+  const st = document.getElementById('idsStatus');
+  if (!ids.length) { st.textContent = 'Tick at least one person.'; return; }
+  if (ids.length > 40) { st.textContent = 'Please choose 40 or fewer at a time.'; return; }
+  if (mode === 'pdf' && (!window.jspdf || !window.html2canvas)) { st.textContent = 'The PDF engine did not load. Use "Print / Save as PDF (vector)" instead.'; return; }
+  let pors = null;
+  if (type === 'staff') { try { pors = (await sb.from('por_assignments').select('*')).data || []; } catch(e) { pors = []; } try { await loadCareerRefs(); } catch(e) {} }
+  const cards = [];
+  for (let k = 0; k < ids.length; k++) {
+    st.textContent = `Preparing card ${k + 1} of ${ids.length}…`;
+    const rec = window.__idSheetList.find(r => r.id === ids[k]);
+    cards.push(idCardHtml(await idCardInfo(type, rec, { pors })));
+  }
+  const per = SHEET.cols * SHEET.rows, pages = Math.ceil(cards.length / per);
+  const label = `ShiShenri Schools — ${type === 'staff' ? 'staff' : 'student'} ID cards — print at 100% / Actual size, double-sided (flip on long edge)`;
+  if (mode === 'print') {
+    let body = '';
+    for (let p = 0; p < pages; p++) for (const side of ['front', 'back']) {
+      body += `<div class="sheet"><div class="cap">${esc(label)} · page ${p * 2 + (side === 'front' ? 1 : 2)}</div>`;
+      cards.slice(p * per, p * per + per).forEach((c, k) => {
+        const pos = sheetPos(k, side === 'back');
+        body += `<div class="slot" style="left:${pos.x}mm;top:${pos.y}mm;">${c[side]}</div>${idCropMarks(pos.x, pos.y)}`;
+      });
+      body += '</div>';
+    }
+    idPrintFrame(`@page{size:A4 portrait;margin:0;} .sheet{position:relative;width:210mm;height:297mm;overflow:hidden;page-break-after:always;break-after:page;} .sheet:last-child{page-break-after:auto;break-after:auto;} .slot{position:absolute;width:${ID_W}mm;height:${ID_H}mm;} .cap{position:absolute;left:0;right:0;top:8mm;text-align:center;font:7pt Arial;color:#888;} .mk{position:absolute;background:#777;}`, body);
+    st.textContent = 'Print dialog opened. Choose "Save as PDF" or your printer; Scale 100%, Margins None.'; return;
+  }
+  try {
+    const { jsPDF } = window.jspdf, pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+    let first = true, done = 0;
+    for (let p = 0; p < pages; p++) for (const side of ['front', 'back']) {
+      if (!first) pdf.addPage('a4', 'portrait'); first = false;
+      pdf.setFontSize(7); pdf.setTextColor(130); pdf.text(label + ' · page ' + (p * 2 + (side === 'front' ? 1 : 2)), SHEET.W / 2, 9, { align: 'center' });
+      const slice = cards.slice(p * per, p * per + per);
+      for (let k = 0; k < slice.length; k++) {
+        const pos = sheetPos(k, side === 'back');
+        const canvas = await idCardCanvas(slice[k][side], 4);
+        pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', pos.x, pos.y, ID_W, ID_H);
+        pdf.setDrawColor(120); pdf.setLineWidth(0.15);
+        [[pos.x, pos.y], [pos.x + ID_W, pos.y], [pos.x, pos.y + ID_H], [pos.x + ID_W, pos.y + ID_H]].forEach(([cx, cy], q) => {
+          const sx = q % 2 ? 1 : -1, sy = q < 2 ? -1 : 1;
+          pdf.line(cx + sx * 1.5, cy, cx + sx * 4.5, cy); pdf.line(cx, cy + sy * 1.5, cx, cy + sy * 4.5);
+        });
+        done++; st.textContent = `Drawing card ${done} of ${cards.length * 2}…`;
+      }
+    }
+    pdf.save(`ID_sheet_${type}_${todayISO()}.pdf`);
+    st.textContent = 'Downloaded. Print at 100% / Actual size, double-sided, flip on the long edge.';
+  } catch(e) { st.textContent = 'Could not make the PDF: ' + e.message; }
+}
+function idCropMarks(x, y){
+  const m = (l, t, w, h) => `<div class="mk" style="left:${l}mm;top:${t}mm;width:${w}mm;height:${h}mm;"></div>`;
+  let out = '';
+  [[x, y, -1, -1], [x + ID_W, y, 1, -1], [x, y + ID_H, -1, 1], [x + ID_W, y + ID_H, 1, 1]].forEach(([cx, cy, sx, sy]) => {
+    out += m(sx < 0 ? cx - 4.5 : cx + 1.5, cy, 3, 0.15) + m(cx, sy < 0 ? cy - 4.5 : cy + 1.5, 0.15, 3);
+  });
+  return out;
 }
 
 
@@ -6480,7 +6749,7 @@ async function confirmStaffImport(){
 // =====================================================================
 // QUALIFICATIONS
 // =====================================================================
-async function openQualifications(staffId){
+async function openQualifications(staffId){ EDIT_QUAL = null;
   await loadCareerRefs();
   const [sr, qr] = await Promise.all([sb.from('staff').select('name,career_rank').eq('id', staffId).maybeSingle(), sb.from('staff_qualifications').select('*').eq('staff_id', staffId).order('year_obtained', { ascending:false })]);
   const Q = qr.data || []; const canEdit = hasPerm('edit_staff'), canVerify = hasAnyPerm(['assign_career_rank','process_promotion']);
@@ -6497,9 +6766,9 @@ async function openQualifications(staffId){
         <td class="right">${q.document_url ? `<a class="iconbtn" href="${esc(q.document_url)}" target="_blank" rel="noopener">Document</a> ` : ''}
           ${canVerify && q.verification_status !== 'verified' ? `<button class="iconbtn" onclick="setQualStatus('${q.id}','verified','${staffId}')">Verify</button>` : ''}
           ${canVerify && q.verification_status === 'pending' ? `<button class="iconbtn" onclick="setQualStatus('${q.id}','rejected','${staffId}')">Reject</button>` : ''}
-          ${canEdit ? `<button class="iconbtn" onclick="deleteQual('${q.id}','${staffId}')">Delete</button>` : ''}</td></tr>`).join('')}
+          ${canEdit ? `<button class="iconbtn" onclick="editQual('${q.id}','${staffId}')">Edit</button> <button class="iconbtn" onclick="deleteQual('${q.id}','${staffId}')">Delete</button>` : ''}</td></tr>`).join('')}
     </table></div>`}
-    ${canEdit ? `<h3 style="font-size:13.5px;margin:16px 0 8px;">Add a qualification</h3>
+    ${canEdit ? `<h3 id="qHeading" style="font-size:13.5px;margin:16px 0 8px;">Add a qualification</h3>
     <div class="fgrid">
       <div class="field"><label>Qualification *</label><select id="q_key">${types.map(t => `<option value="${t.key}">${esc(t.label)}</option>`).join('')}</select></div>
       <div class="field"><label>Year obtained</label><input id="q_year" type="number" min="1950" max="2100"></div>
@@ -6510,15 +6779,38 @@ async function openQualifications(staffId){
     </div>
     <div class="fgrid">
       <div class="field"><label>Certificate no. / reference</label><input id="q_ref"></div>
-      <div class="field"><label>Supporting document</label><input type="file" id="q_doc" accept=".pdf,image/*"></div>
+      <div class="field"><label>Supporting document <span id="qDocNote" style="font-weight:400;color:var(--grey);"></span></label><input type="file" id="q_doc" accept=".pdf,image/*"></div>
     </div>
     <div id="qStatus" class="desc"></div>` : ''}
     <div class="mfoot"><button class="btn secondary" onclick="closeModal()">Close</button>${canEdit ? `<button class="btn" id="qBtn" onclick="saveQualification('${staffId}')">Add qualification</button>` : ''}</div>`, true);
+}
+let EDIT_QUAL = null;
+async function editQual(id, staffId){
+  const { data: q } = await sb.from('staff_qualifications').select('*').eq('id', id).maybeSingle();
+  if (!q || !document.getElementById('q_key')) return;
+  EDIT_QUAL = q;
+  document.getElementById('q_key').value = q.qualification_key; document.getElementById('q_year').value = q.year_obtained || '';
+  document.getElementById('q_inst').value = q.institution || ''; document.getElementById('q_field').value = q.field_of_study || ''; document.getElementById('q_ref').value = q.certificate_ref || '';
+  document.getElementById('qHeading').textContent = 'Edit this qualification';
+  document.getElementById('qDocNote').textContent = q.document_url ? '(leave empty to keep the current file)' : '';
+  document.getElementById('qBtn').textContent = 'Save changes';
+  document.getElementById('qStatus').textContent = q.verification_status === 'verified' ? 'Note: changing the qualification type or year of a verified record sends it back for re-verification.' : '';
+  document.getElementById('qHeading').scrollIntoView({ block: 'nearest' });
 }
 async function saveQualification(staffId){
   const st = document.getElementById('qStatus'), btn = document.getElementById('qBtn'); btn.disabled = true; st.textContent = 'Saving…';
   try {
     let url = null; const f = document.getElementById('q_doc').files[0]; if (f) url = await uploadPhoto(f, 'qualifications');
+    if (EDIT_QUAL) {
+      const q = EDIT_QUAL, patch = { qualification_key: val('q_key'), institution: val('q_inst'), field_of_study: val('q_field'), year_obtained: val('q_year') ? Number(val('q_year')) : null, certificate_ref: val('q_ref') };
+      if (url) patch.document_url = url;
+      const reverify = q.verification_status === 'verified' && (patch.qualification_key !== q.qualification_key || (patch.year_obtained || null) !== (q.year_obtained || null));
+      if (reverify) patch.verification_status = 'pending';
+      const { data, error } = await sb.from('staff_qualifications').update(patch).eq('id', q.id).select('id');
+      if (error) throw error; if (!data || !data.length) throw new Error('Not saved — you may not be allowed to edit this record.');
+      EDIT_QUAL = null; await logAudit('update', 'staff_qualifications', q.id, { staff_id: staffId });
+      toast(reverify ? 'Saved. It now needs to be verified again.' : 'Qualification updated.'); await openQualifications(staffId); renderTabAsync(); return;
+    }
     const { error } = await sb.from('staff_qualifications').insert({ staff_id: staffId, qualification_key: val('q_key'), institution: val('q_inst'), field_of_study: val('q_field'),
       year_obtained: val('q_year') ? Number(val('q_year')) : null, certificate_ref: val('q_ref'), document_url: url, created_by: MY_PROFILE?.name });
     if (error) throw error;
