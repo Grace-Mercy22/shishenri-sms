@@ -414,7 +414,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r35'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r36'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -443,8 +443,31 @@ const FEE_STRUCTURE = {
   Secondary: { returning: { Tuition:9000, 'Exam Fee':1000, 'PTA Dues':500 },
                new: { Tuition:9000, 'Exam Fee':1000, 'PTA Dues':500, 'Sportswear':5000, 'Utility':2000 } },
 };
-function expectedFeeItems(classId, category){ const sec = feeSectionFor(classId); return FEE_STRUCTURE[sec][category==='new'?'new':'returning']; }
-function expectedFeeTotal(classId, category){ return Object.values(expectedFeeItems(classId, category)).reduce((a,b)=>a+b,0); }
+// Fee lines come from the fee_items table (Settings > Fees Breakdown). Until SQL 40 is run, the built-in amounts above are used.
+let FEE_ITEMS = null, FEE_ITEMS_AT = 0;
+async function loadFeeItems(force){
+  if (!force && FEE_ITEMS_AT && Date.now() - FEE_ITEMS_AT < 30000) return;
+  try { const { data, error } = await sb.from('fee_items').select('*').order('sort'); if (error) throw error; FEE_ITEMS = (data && data.length) ? data : null; }
+  catch(e) { FEE_ITEMS = null; }
+  FEE_ITEMS_AT = Date.now();
+}
+// uniformBy: 'school' (default) or 'parents'. Parents providing the uniform drops the uniform line (Nursery/Primary only).
+function expectedFeeItems(classId, category, uniformBy){
+  const sec = feeSectionFor(classId), isNew = category === 'new';
+  if (FEE_ITEMS) {
+    const out = {};
+    FEE_ITEMS.filter(r => r.section === sec && r.active !== false).sort((a, b) => (a.sort || 0) - (b.sort || 0)).forEach(r => {
+      if (r.applies_to === 'new' && !isNew) return;
+      if (r.is_uniform && uniformBy === 'parents') return;
+      out[r.name] = Number(r.amount) || 0;
+    });
+    return out;
+  }
+  const base = FEE_STRUCTURE[sec][isNew ? 'new' : 'returning'];
+  if (uniformBy === 'parents' && sec !== 'Secondary') { const o = Object.assign({}, base); delete o['Uniform (one pair)']; return o; }
+  return base;
+}
+function expectedFeeTotal(classId, category, uniformBy){ return Object.values(expectedFeeItems(classId, category, uniformBy)).reduce((a,b)=>a+b,0); }
 
 const REQUIREMENTS = {
   Nursery: ['Mathematics and English textbooks'],
@@ -782,8 +805,18 @@ function render(){
   c.innerHTML = `<div class="panel"><div class="empty"><div class="big">&#9203;</div>Loading…</div></div>`;
   renderTabAsync();
 }
+let _dbRenderT = null;
+function debounceRender(){ clearTimeout(_dbRenderT); _dbRenderT = setTimeout(renderTabAsync, 160); }
 async function renderTabAsync(){
   const c = document.getElementById('content');
+  // remember the typing position so a search box keeps focus while the list refreshes under it
+  const keep = (() => { const a = document.activeElement; if (!a || !c.contains(a) || !/^(INPUT|TEXTAREA)$/.test(a.tagName)) return null;
+    return { i: [...c.querySelectorAll('input,textarea')].indexOf(a), ph: a.placeholder || '', s: a.selectionStart, e: a.selectionEnd }; })();
+  try { await renderTabBody(c); } finally {
+    if (keep && keep.i >= 0) { const el = [...c.querySelectorAll('input,textarea')][keep.i]; if (el && (el.placeholder || '') === keep.ph) { el.focus(); try { el.setSelectionRange(keep.s, keep.e); } catch(e) {} } }
+  }
+}
+async function renderTabBody(c){
   try {
     if (CUR_TAB === 'dashboard') c.innerHTML = await renderDashboard();
     else if (CUR_TAB === 'students') c.innerHTML = openStudentId ? await renderStudentDetail() : await renderStudents();
@@ -1085,7 +1118,7 @@ async function dashBody(){
   }
   if (k === 'fees') {
     const term = SETTINGS_CACHE.current_term; await ensureFeePct();
-    const { data: sd } = await sb.from('students').select('id,class_id,fee_category,status'); const act = (sd || []).filter(isActiveStudent);
+    const { data: sd } = await sb.from('students').select('*'); const act = (sd || []).filter(isActiveStudent);
     const { data: pay } = act.length ? await sb.from('fee_payments').select('*').in('student_id', act.map(s => s.id)).eq('term', term) : { data: [] };
     const paid = {}; (pay || []).filter(inCurPeriod).forEach(p => { paid[p.student_id] = (paid[p.student_id] || 0) + Number(p.amount); });
     let te = 0, tc = 0;
@@ -1188,7 +1221,7 @@ async function renderStudents(){
           ${myClasses.map(c=>`<option value="${c.id}" ${studentFilter.classId===c.id?'selected':''}>${c.name}</option>`).join('')}
         </select>
         <div class="searchbox"><span class="sic">&#128269;</span>
-          <input placeholder="Search by name…" value="${esc(studentFilter.q)}" oninput="studentFilter.q=this.value;renderTabAsync();" style="width:200px;">
+          <input placeholder="Search by name…" value="${esc(studentFilter.q)}" oninput="studentFilter.q=this.value;debounceRender();" style="width:200px;">
         </div>
         ${sortSelectHtml('students')}
       </div>
@@ -1263,6 +1296,19 @@ async function renderStudentDetail(){
   `;
 }
 
+function uniformOptionsHtml(classId, cur){
+  const a = expectedFeeTotal(classId, 'new', 'school'), b = expectedFeeTotal(classId, 'new', 'parents');
+  return `<option value="school" ${cur !== 'parents' ? 'selected' : ''}>School provides the uniform (new intake pays ${naira(a)})</option><option value="parents" ${cur === 'parents' ? 'selected' : ''}>Parents provide the uniform (new intake pays ${naira(b)})</option>`;
+}
+function refreshUniformField(){
+  const f = document.getElementById('uniformField'); if (!f) return;
+  const cls = document.getElementById('f_class').value, sec = feeSectionFor(cls), sel = document.getElementById('f_uniform');
+  const isNew = document.getElementById('f_feecat').value === 'new';
+  f.style.display = sec === 'Secondary' ? 'none' : '';
+  const cur = sel.value || sel.dataset.v || 'school';
+  sel.innerHTML = uniformOptionsHtml(cls, cur); sel.dataset.v = sel.value;
+  document.getElementById('uniformNote').textContent = isNew ? 'This decides the registration fee of a newly enrolled pupil. School is the default.' : 'Only affects pupils whose fee category is "New Student (Enrolment)".';
+}
 async function openStudentForm(existing){
   const s = existing || {};
   const suggestedId = existing ? '' : await nextStudentId();
@@ -1295,7 +1341,7 @@ async function openStudentForm(existing){
     </div>
     <div class="field"><label>Admission / Application Form Number</label><input id="f_admform" value="${esc(s.admission_form_number || suggestedForm)}" ${autoAdm && !s.admission_form_number ? 'placeholder="Assigned automatically when you save"' : ''}>${autoAdm ? `<div class="desc" style="margin:3px 0 0;">Leave empty and the system gives the next number. A number is never given to anyone else, even after the record is deleted.</div>` : ''}</div>
     <div class="fgrid">
-      <div class="field"><label>Class *</label><select id="f_class">${CLASSES.map(c=>`<option value="${c.id}" ${s.class_id===c.id?'selected':''}>${c.name}</option>`).join('')}</select></div>
+      <div class="field"><label>Class *</label><select id="f_class" onchange="refreshUniformField()">${CLASSES.map(c=>`<option value="${c.id}" ${s.class_id===c.id?'selected':''}>${c.name}</option>`).join('')}</select></div>
       <div class="field"><label>Gender</label><select id="f_gender"><option ${s.gender==='Male'?'selected':''}>Male</option><option ${s.gender==='Female'?'selected':''}>Female</option></select></div>
     </div>
     <div class="fgrid">
@@ -1308,9 +1354,11 @@ async function openStudentForm(existing){
     </div>
     <div class="field"><label>Parent Email</label><input id="f_parent_email" type="email" value="${esc(s.parent_email||'')}"></div>
     <div class="fgrid">
-      <div class="field"><label>Fee Category</label><select id="f_feecat"><option value="returning" ${s.fee_category!=='new'?'selected':''}>Returning Student</option><option value="new" ${s.fee_category==='new'?'selected':''}>New Student (Enrolment)</option></select></div>
+      <div class="field"><label>Fee Category</label><select id="f_feecat" onchange="refreshUniformField()"><option value="returning" ${s.fee_category!=='new'?'selected':''}>Returning Student</option><option value="new" ${s.fee_category==='new'?'selected':''}>New Student (Enrolment)</option></select></div>
       <div class="field"><label>Status</label><select id="f_status">${STUDENT_STATUSES.map(v=>`<option value="${v}" ${(s.status||'active')===v?'selected':''}>${STUDENT_STATUS_LABELS[v]}</option>`).join('')}</select></div>
     </div>
+    <div class="field" id="uniformField" style="display:none;"><label>Uniform provided by <span style="font-weight:400;color:var(--grey);">(Nursery &amp; Primary)</span></label>
+      <select id="f_uniform" data-v="${s.uniform_by || 'school'}"></select><div class="desc" id="uniformNote"></div></div>
     ${scholHtml}
     <div id="studentSaveStatus" class="desc"></div>
     <div class="mfoot">
@@ -1392,6 +1440,7 @@ async function saveStudent(existingId){
     fee_category: document.getElementById('f_feecat').value,
     status: newStatus,
   };
+  if (feeSectionFor(data.class_id) !== 'Secondary') data.uniform_by = document.getElementById('f_uniform')?.value || 'school';
   if (existingId) {
     const { data: prev } = await sb.from('students').select('status,student_id').eq('id', existingId).maybeSingle();
     if (prev && prev.status && prev.status !== 'active' && newStatus === 'active') {
@@ -1416,8 +1465,10 @@ async function saveStudent(existingId){
     }
     if (existingId && !admissionFormNumber) delete data.admission_form_number;   // never blank an issued number; the database fills one in if there is none
     let res, newId = existingId;
-    if (existingId) res = await sb.from('students').update(data).eq('id', existingId);
-    else { res = await sb.from('students').insert(data).select('id').maybeSingle(); newId = res.data && res.data.id; }
+    const writeStudent = async d => existingId ? await sb.from('students').update(d).eq('id', existingId) : await sb.from('students').insert(d).select('id').maybeSingle();
+    res = await writeStudent(data);
+    if (res.error && /uniform_by/i.test(res.error.message || '')) { const d2 = Object.assign({}, data); delete d2.uniform_by; res = await writeStudent(d2); }   // SQL 40 not run yet
+    if (!existingId) newId = res.data && res.data.id;
     if (res.error) throw res.error;
     const scholEl = document.getElementById('f_schol');
     if (scholEl && scholEl.value !== (scholEl.dataset.initial || '')) {
@@ -1487,7 +1538,7 @@ function openImportModal(){
       <button class="btn secondary" onclick="closeModal()">Cancel</button>
       <button class="btn" id="importConfirmBtn" disabled onclick="confirmImport()">Import 0 Students</button>
     </div>
-  `, true);
+  `, true); setTimeout(refreshUniformField, 0);
 }
 function matchClassId(raw){
   if (!raw) return null;
@@ -1879,6 +1930,7 @@ async function loadSettings(){
   if (error) { toast('Could not load settings: ' + error.message); SETTINGS_CACHE = { current_term:'', subjects:{} }; return SETTINGS_CACHE; }
   SETTINGS_CACHE = data || { current_term:'', subjects:{} };
   SETTINGS_CACHE.subjects = SETTINGS_CACHE.subjects || {};
+  await loadFeeItems();
   return SETTINGS_CACHE;
 }
 function getSubjects(section){
@@ -1909,6 +1961,7 @@ async function renderSettingsTab(){
     <button class="btn small" onclick="saveTerm()">Save</button>
   </div>
   ${renderSchoolSettingsPanels()}
+  ${await feeStructureSettingsPanel()}
   ${await scholarshipSettingsPanel()}
   <div class="panel">
     <h2>Subjects</h2>
@@ -3148,7 +3201,7 @@ async function copyCommunication(id){
 // =====================================================================
 // FEES & RECEIPTS
 // =====================================================================
-let feesState = { classId: 'ALL', filter: 'ALL' };
+let feesState = { classId: 'ALL', filter: 'ALL', q: '' };
 const FEE_FILTERS = [['ALL','Everyone'],['paid','Paid in full'],['part','Part payment'],['none','Not paid at all'],['owe','Owing this term (part or none)'],['prev','Owing other terms / sessions']];
 
 async function renderFees(){
@@ -3161,6 +3214,8 @@ async function renderFees(){
   if (isScopedRole('fees') && myAssignedClasses('fees')) roster = roster.filter(s => myAssignedClasses('fees').includes(s.class_id));
   if (feesState.classId !== 'ALL') roster = roster.filter(s => s.class_id === feesState.classId);
   roster.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  const fq = (feesState.q || '').trim().toLowerCase();
+  if (fq) roster = roster.filter(s => ((s.name || '') + ' ' + (s.student_id || '')).toLowerCase().includes(fq));
 
   const ids = roster.map(s=>s.id);
   let payments = [];
@@ -3187,7 +3242,8 @@ async function renderFees(){
   } else if (flt === 'owe') rows = rows.filter(r => r.balance > 0);
   else if (flt !== 'ALL') rows = rows.filter(r => r.st === flt);
   rows.forEach(r => { totalExpected += r.expected; totalCollected += r.paid; });
-  const fltSel = `<select onchange="feesState.filter=this.value;renderTabAsync();" title="Show only…">${FEE_FILTERS.map(([v, l]) => `<option value="${v}" ${flt === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  const fltSel = `<select onchange="feesState.filter=this.value;renderTabAsync();" title="Show only…">${FEE_FILTERS.map(([v, l]) => `<option value="${v}" ${flt === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <div class="searchbox"><span class="sic">&#128269;</span><input placeholder="Search name or ID…" value="${esc(feesState.q)}" oninput="feesState.q=this.value;debounceRender();" style="width:190px;"></div>`;
   if (prevRows) {
     const owedTotal = prevRows.reduce((a, r) => a + r.bal, 0);
     return `<div class="panel">
@@ -3273,7 +3329,7 @@ async function openPaymentForm(studentId, periodArg){
     <h3 style="font-size:13px;margin:16px 0 8px;">Payments for ${esc(period)}</h3>
     <div class="tablewrap"><table>
       <tr><th>Receipt No.</th><th>Date</th><th class="right">Amount</th><th>Method</th><th></th></tr>
-      ${payments.map(p=>`<tr><td class="mono">${esc(p.receipt_no||'—')}</td><td class="mono">${p.date}</td><td class="right mono">${naira(p.amount)}</td><td>${esc(p.method||'')}</td><td class="right"><button class="iconbtn" onclick="printReceipt('${p.id}')">Receipt</button>${hasPerm('edit_payment') ? ` <button class="iconbtn" onclick="openPaymentEdit('${p.id}','${studentId}')">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--grey);">None yet.</td></tr>'}
+      ${payments.map(p=>`<tr><td class="mono">${esc(p.receipt_no||'—')}</td><td class="mono">${p.date}</td><td class="right mono">${naira(p.amount)}</td><td>${esc(p.method||'')}</td><td class="right"><button class="iconbtn" onclick="printReceipt('${p.id}')">Receipt</button>${hasPerm('edit_payment') ? ` <button class="iconbtn" onclick="openPaymentEdit('${p.id}','${studentId}')">Edit</button>` : ''}${hasPerm('delete_payment') || hasPerm('full_access') ? ` <button class="iconbtn" style="color:var(--bad);" onclick="deletePayment('${p.id}','${studentId}')">Delete</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--grey);">None yet.</td></tr>'}
     </table></div>
     <div class="mfoot">
       <button class="btn secondary" onclick="closeModal()">Close</button>
@@ -3312,6 +3368,19 @@ async function openPaymentEdit(paymentId, studentId){
     </div>
     <div id="peStatus" class="desc"></div>
     <div class="mfoot"><button class="btn secondary" onclick="openPaymentForm('${studentId}')">Back</button><button class="btn" id="peBtn" onclick="savePaymentEdit('${paymentId}','${studentId}')">Save changes</button></div>`);
+}
+async function deletePayment(paymentId, studentId){
+  if (!(hasPerm('delete_payment') || hasPerm('full_access'))) { toast('You do not have permission to delete payments.'); return; }
+  const { data: p } = await sb.from('fee_payments').select('*').eq('id', paymentId).maybeSingle();
+  if (!p) { toast('Payment not found.'); return; }
+  if (!confirm(`Delete this payment?\n\nReceipt ${p.receipt_no || '—'} · ${naira(p.amount)} · ${p.date} · ${rowPeriod(p)}\n\nUse this only for a wrong or duplicated entry. The pupil's balance goes back up by ${naira(p.amount)}. The deleted entry is kept in the audit log.`)) return;
+  try {
+    const { data, error } = await sb.from('fee_payments').delete().eq('id', paymentId).select('id');
+    if (error) throw error;
+    if (!data || !data.length) { const { data: left } = await sb.from('fee_payments').select('id').eq('id', paymentId).maybeSingle(); if (!left) { /* gone */ } else throw new Error('Not deleted — you may not be allowed to delete payments (ask the Proprietor to give you the "Delete a wrongly entered or duplicated fee payment" permission, and make sure SQL file 40 has been run).'); }
+    await logAudit('delete', 'fee_payments', paymentId, { student_id: studentId, receipt_no: p.receipt_no, amount: p.amount, date: p.date, term: p.term, session: p.session, method: p.method, note: p.note, recorded_by: p.recorded_by });
+    FEE_BOOK = null; toast(`Payment ${p.receipt_no || ''} deleted.`); openPaymentForm(studentId, rowPeriod(p));
+  } catch(e) { toast('Could not delete: ' + e.message); }
 }
 async function savePaymentEdit(paymentId, studentId){
   const st = document.getElementById('peStatus'), btn = document.getElementById('peBtn');
@@ -3514,8 +3583,10 @@ async function openAdmissionForm(existing){
     <div class="field"><label>Admission Form Number</label><input id="ad_formnum" value="${esc(r.admission_form_number || suggestedForm)}" ${autoAdm && !r.admission_form_number ? 'placeholder="Assigned automatically when you save"' : ''}></div>
     <div class="fgrid">
       <div class="field"><label>Date of Birth</label><input id="ad_dob" type="date" value="${r.dob||''}"></div>
-      <div class="field"><label>Class Applied For *</label><select id="ad_class">${CLASSES.map(c=>`<option value="${c.name}" ${r.class_applied_for===c.name?'selected':''}>${c.name}</option>`).join('')}</select></div>
+      <div class="field"><label>Class Applied For *</label><select id="ad_class" onchange="adClassChanged()">${CLASSES.map(c=>`<option value="${c.name}" ${r.class_applied_for===c.name?'selected':''}>${c.name}</option>`).join('')}</select></div>
     </div>
+    <div class="field" id="adUniformField"><label>Uniform provided by <span style="font-weight:400;color:var(--grey);">(Nursery &amp; Primary)</span></label>
+      <select id="ad_uniform">${uniformOptionsHtml((CLASSES.find(c => c.name === r.class_applied_for) || CLASSES[0]).id, r.uniform_by || 'school')}</select></div>
     <div class="fgrid">
       <div class="field"><label>Parent/Guardian Name</label><input id="ad_parent" value="${esc(r.parent_name||'')}"></div>
       <div class="field"><label>Parent Phone</label><input id="ad_phone" value="${esc(r.parent_phone||'')}"></div>
@@ -3532,6 +3603,12 @@ async function openAdmissionForm(existing){
     </div>
   `);
 }
+function adClassChanged(){
+  const cls = CLASSES.find(c => c.name === document.getElementById('ad_class').value) || CLASSES[0], sel = document.getElementById('ad_uniform'), f = document.getElementById('adUniformField');
+  if (!sel || !f) return;
+  f.style.display = feeSectionFor(cls.id) === 'Secondary' ? 'none' : '';
+  sel.innerHTML = uniformOptionsHtml(cls.id, sel.value);
+}
 async function saveAdmission(existingId){
   const btn = document.getElementById('admSaveBtn');
   const name = document.getElementById('ad_name').value.trim();
@@ -3546,12 +3623,15 @@ async function saveAdmission(existingId){
     status: document.getElementById('ad_status').value,
     notes: document.getElementById('ad_notes').value.trim(),
   };
+  const admCls = CLASSES.find(c => c.name === data.class_applied_for);
+  if (admCls && feeSectionFor(admCls.id) !== 'Secondary') data.uniform_by = document.getElementById('ad_uniform')?.value || 'school';
   btn.disabled = true;
   if (existingId && !data.admission_form_number) delete data.admission_form_number;   // an issued number is never blanked
   try {
     let res;
-    if (existingId) res = await sb.from('admissions').update(data).eq('id', existingId);
-    else res = await sb.from('admissions').insert(data);
+    const writeAdm = async d => existingId ? await sb.from('admissions').update(d).eq('id', existingId) : await sb.from('admissions').insert(d);
+    res = await writeAdm(data);
+    if (res.error && /uniform_by/i.test(res.error.message || '')) { const d2 = Object.assign({}, data); delete d2.uniform_by; res = await writeAdm(d2); }
     if (res.error) throw res.error;
     await logAudit(existingId?'update':'create', 'admissions', existingId||data.name, { status: data.status });
     closeModal(); toast('Saved.'); renderTabAsync();
@@ -3575,6 +3655,7 @@ async function enrolAdmission(id){
       admission_date: todayISO(), parent_name: r.parent_name, parent_phone: r.parent_phone,
       fee_category: 'new', status: 'active', student_id: studentId,
       admission_form_number: r.admission_form_number || null,   // the applicant's number carries over; if none, the database issues one
+      ...(r.uniform_by ? { uniform_by: r.uniform_by } : {}),
     });
     if (error) throw error;
     await sb.from('admissions').update({ status: 'Enrolled' }).eq('id', id);
@@ -3607,8 +3688,8 @@ async function printAdmissionDocument(admissionId){
   await loadSettings();
   const cls = CLASSES.find(c=>c.name===r.class_applied_for);
   const classId = cls ? cls.id : 'PN';
-  const feeItems = expectedFeeItems(classId, 'new');
-  const feeTotal = expectedFeeTotal(classId, 'new');
+  const feeItems = expectedFeeItems(classId, 'new', r.uniform_by);
+  const feeTotal = expectedFeeTotal(classId, 'new', r.uniform_by);
   const today = todayISO();
   // If this admission has already been enrolled, a real Student ID exists — look it up so the letter can show it.
   let studentId = null;
@@ -4108,6 +4189,7 @@ async function exportCustomColumns(format){
 // =====================================================================
 let FEE_PCT = {}, FEE_PCT_AT = 0;
 async function ensureFeePct(force){
+  await loadFeeItems(force);
   if (ACCESS_MODE !== 'rbac') { FEE_PCT = {}; return; }
   if (!force && Date.now() - FEE_PCT_AT < 20000) return;
   try {
@@ -4116,9 +4198,12 @@ async function ensureFeePct(force){
   } catch(e) { FEE_PCT = {}; }
   FEE_PCT_AT = Date.now();
 }
-function tuitionOf(classId, cat){ return Number(expectedFeeItems(classId, cat).Tuition || 0); }
+function tuitionOf(classId, cat){
+  if (FEE_ITEMS) { const sec = feeSectionFor(classId); return FEE_ITEMS.filter(r => r.section === sec && r.active !== false && r.is_tuition && (r.applies_to !== 'new' || cat === 'new')).reduce((a, r) => a + (Number(r.amount) || 0), 0); }
+  return Number(expectedFeeItems(classId, cat).Tuition || 0);
+}
 function scholarshipDiscountFor(s){ const p = Number(FEE_PCT[s.id] || 0); return p > 0 ? Math.round(tuitionOf(s.class_id, s.fee_category) * p / 100) : 0; }
-function expectedFeeFor(s){ return expectedFeeTotal(s.class_id, s.fee_category) - scholarshipDiscountFor(s); }
+function expectedFeeFor(s){ return expectedFeeTotal(s.class_id, s.fee_category, s.uniform_by) - scholarshipDiscountFor(s); }
 function canFeeReports(){ return ACCESS_MODE === 'rbac' && hasPerm('view_fee_reports'); }
 function canScholarships(){ return ACCESS_MODE === 'rbac' && hasPerm('manage_scholarships'); }
 
@@ -4132,7 +4217,7 @@ async function syncFeeAssessments(force){
   try {
     await loadSettings(); const term = SETTINGS_CACHE.current_term; if (!term) return false;
     await ensureFeePct(true);
-    const students = (await fetchEveryRow('students', 'id,class_id,fee_category,status')).filter(isActiveStudent);
+    const students = (await fetchEveryRow('students', '*')).filter(isActiveStudent);
     const schol = {};
     if (hasPerm('view_fee_reports') || hasPerm('manage_scholarships')) {
       try { (await fetchEveryRow('student_scholarships', 'id,student_id,scholarship_id')).forEach(r => { schol[r.student_id] = r.scholarship_id; }); } catch(e) {}
@@ -4161,7 +4246,7 @@ async function feeBook(force){
   const term = curPeriod() || '';
   const norm = r => { const ses = rowSession(r); return Object.assign({}, r, { termRaw: r.term, session: ses, term: periodLabel(r.term, ses) }); };
   const [stu, pay0, asm0, schRes, ssRes] = await Promise.all([
-    fetchEveryRow('students', 'id,name,student_id,class_id,fee_category,status,parent_phone'),
+    fetchEveryRow('students', '*'),
     fetchEveryRow('fee_payments', 'id,student_id,term,session,amount,date,receipt_no,method').catch(() => fetchEveryRow('fee_payments', 'id,student_id,term,amount,date,receipt_no,method')),
     fetchEveryRow('fee_assessments', '*').catch(() => []),
     sb.from('scholarships').select('*').order('sort'),
@@ -4175,7 +4260,7 @@ async function feeBook(force){
   const paidIn = (sid, t) => (paid[sid] && paid[sid][t]) || 0;
   const cur = stu.filter(isActiveStudent).map(s => {
     const exp = expectedFeeFor(s), pd = paidIn(s.id, term);
-    return { s, term, exp, paid: pd, bal: Math.max(exp - pd, 0), status: feeStatusOf(exp, pd), sch: schOf[s.id] || null,
+    return { s, term, exp, paid: pd, bal: Math.max(exp - pd, 0), status: feeStatusOf(exp, pd), sch: schOf[s.id] || null, pend: !!(schOf[s.id] && schOf[s.id].returning_only && s.fee_category === 'new'),
              tuition: tuitionOf(s.class_id, s.fee_category), disc: scholarshipDiscountFor(s) };
   });
   const prev = (asm || []).filter(a => a.term !== term && byId[a.student_id]).map(a => {
@@ -4220,7 +4305,7 @@ async function feeDashDetail(k){
   const right = h => h.replace(/<th>(Expected|Paid|Balance)<\/th>/g, '<th class="right">$1</th>');
   if (k === 'feeSchol') {
     const list = sortFeeRows(b.cur.filter(r => r.sch));
-    const rows = list.map(r => `<tr class="dclick" data-s="${esc(((r.s.name||'')+' '+(r.sch.name||'')).toLowerCase())}" onclick="dashGoStudent('${r.s.id}')"><td>${esc(r.s.name)}</td><td>${esc(classById(r.s.class_id)?.name||'')}</td><td>${esc(r.sch.name)}</td><td class="right mono">${r.sch.percent ?? '—'}%</td><td class="right mono">${naira(r.disc)}</td><td class="right mono">${naira(r.bal)}</td></tr>`).join('');
+    const rows = list.map(r => `<tr class="dclick" data-s="${esc(((r.s.name||'')+' '+(r.sch.name||'')).toLowerCase())}" onclick="dashGoStudent('${r.s.id}')"><td>${esc(r.s.name)}</td><td>${esc(classById(r.s.class_id)?.name||'')}</td><td>${esc(r.sch.name)}${r.pend ? ' <span class="pill warn" title="A newly enrolled pupil pays full fees first; the discount starts when the pupil is a returning student">starts when returning</span>' : ''}</td><td class="right mono">${r.sch.percent ?? '—'}%</td><td class="right mono">${naira(r.disc)}</td><td class="right mono">${naira(r.bal)}</td></tr>`).join('');
     return { title: `Students on scholarship &mdash; ${list.length}`, sub: 'Click a pupil to open the record.', controls: dashSearchBox(), body: right(dtable(['Name','Class','Scholarship','% off tuition','Tuition saved','Balance'], rows, 'No student has a scholarship yet.')), go: ['reports','Open Reports'] };
   }
   if (k === 'feePaid') {
@@ -4252,7 +4337,7 @@ function feeRepTable(b, st){
   const N = v => naira(v);
   if (st.kind === 'scholarship') {
     head = ['#','Name','Student ID','Class','Scholarship','% off','Normal tuition','Tuition saved','Total due','Paid','Balance'];
-    body = rows.map((r, i) => [i+1, r.s.name, r.s.student_id || '', classById(r.s.class_id)?.name || '', r.sch.name, (r.sch.percent ?? '') + '%', N(r.tuition), N(r.disc), N(r.exp), N(r.paid), N(r.bal)]);
+    body = rows.map((r, i) => [i+1, r.s.name, r.s.student_id || '', classById(r.s.class_id)?.name || '', r.sch.name + (r.pend ? ' (starts when returning)' : ''), (r.sch.percent ?? '') + '%', N(r.tuition), N(r.disc), N(r.exp), N(r.paid), N(r.bal)]);
     foot = ['', 'TOTAL', '', '', '', '', '', N(rows.reduce((a, r) => a + r.disc, 0)), N(rows.reduce((a, r) => a + r.exp, 0)), N(rows.reduce((a, r) => a + r.paid, 0)), N(rows.reduce((a, r) => a + r.bal, 0))];
   } else {
     head = ['#','Name','Student ID','Class','Session','Term','This / earlier','Fees set on','Expected','Paid','Balance','Status','Parent phone'];
@@ -4342,6 +4427,61 @@ async function studentFeeHistoryPanel(s){
 }
 
 // ---------- Settings: scholarships ----------
+let feeBreakSection = 'Nursery';
+function canFeeStructure(){ return ACCESS_MODE === 'rbac' && hasPerm('manage_fee_structure'); }
+async function feeStructureSettingsPanel(){
+  if (!canFeeStructure()) return '';
+  await loadFeeItems(true);
+  if (!FEE_ITEMS) return `<div class="panel"><h2>Fees Breakdown</h2><div class="desc">Run SQL file 40 in Supabase to switch this on. Until then the built-in amounts are used.</div></div>`;
+  const sec = feeBreakSection, rows = FEE_ITEMS.filter(r => r.section === sec).sort((a, b) => (a.sort || 0) - (b.sort || 0));
+  const cls = CLASSES.find(c => feeSectionFor(c.id) === sec).id;
+  const tR = expectedFeeTotal(cls, 'returning'), tN = expectedFeeTotal(cls, 'new', 'school'), tNp = expectedFeeTotal(cls, 'new', 'parents');
+  const inp = 'style="width:100%;"';
+  return `<div class="panel">
+    <h2>Fees Breakdown</h2>
+    <div class="desc">Set the amount of every fee line for each section. Saved amounts apply immediately to <strong>all pupils, new and returning</strong>, for the current term onward. Earlier terms keep the amounts they were assessed with. Every change is recorded in the audit log.</div>
+    <div class="row" style="margin-bottom:10px;">${['Nursery','Primary','Secondary'].map(x => `<button class="btn small ${x === sec ? '' : 'secondary'}" onclick="feeBreakSection='${x}';renderTabAsync();">${x}</button>`).join('')}</div>
+    <div class="tablewrap"><table>
+      <tr><th>Fee item</th><th>Charged to</th><th class="right">Amount (₦)</th><th>Description</th><th></th></tr>
+      ${rows.map(r => `<tr>
+        <td><input id="fi_n_${r.id}" value="${esc(r.name)}" ${inp}>${r.is_tuition ? '<div class="desc" style="margin:2px 0 0;">Scholarships come off this line</div>' : ''}${r.is_uniform ? '<div class="desc" style="margin:2px 0 0;">Left out when parents provide the uniform</div>' : ''}</td>
+        <td><select id="fi_w_${r.id}" ${r.is_tuition || r.is_uniform ? 'disabled' : ''}><option value="all" ${r.applies_to === 'all' ? 'selected' : ''}>Every pupil, every term</option><option value="new" ${r.applies_to === 'new' ? 'selected' : ''}>New intake only</option></select></td>
+        <td><input id="fi_a_${r.id}" type="number" min="0" step="1" value="${Number(r.amount)}" style="width:110px;text-align:right;"></td>
+        <td><input id="fi_d_${r.id}" value="${esc(r.description || '')}" ${inp}></td>
+        <td class="right" style="white-space:nowrap;"><button class="btn small" onclick="saveFeeItem('${r.id}','${sec}',${Number(r.amount)})">Save</button>${r.is_tuition || r.is_uniform ? '' : ` <button class="iconbtn" onclick="removeFeeItem('${r.id}')">Remove</button>`}</td></tr>`).join('')}
+      <tr style="background:var(--bg2,#f6f4ee);"><td><input id="fi_n_new" placeholder="New fee item…" ${inp}></td>
+        <td><select id="fi_w_new"><option value="all">Every pupil, every term</option><option value="new">New intake only</option></select></td>
+        <td><input id="fi_a_new" type="number" min="0" step="1" placeholder="0" style="width:110px;text-align:right;"></td><td><input id="fi_d_new" placeholder="Description" ${inp}></td>
+        <td class="right"><button class="btn small secondary" onclick="saveFeeItem(null,'${sec}',0)">+ Add</button></td></tr>
+    </table></div>
+    <div class="desc" style="margin-top:8px;">${sec} &mdash; <strong>Returning pupil:</strong> ${naira(tR)} per term &middot; <strong>New intake:</strong> ${naira(tN)}${sec === 'Secondary' ? ' (parents provide the uniform in Secondary)' : ` &middot; <strong>New intake, parents provide the uniform:</strong> ${naira(tNp)}`}</div>
+  </div>`;
+}
+async function saveFeeItem(id, section, oldAmt){
+  const k = id || 'new', name = document.getElementById('fi_n_' + k).value.trim(), amtRaw = document.getElementById('fi_a_' + k).value.trim();
+  const amount = Number(amtRaw), applies = document.getElementById('fi_w_' + k).value, desc = document.getElementById('fi_d_' + k).value.trim();
+  if (!name) { toast('Give the fee item a name.'); return; }
+  if (amtRaw === '' || isNaN(amount) || amount < 0) { toast('Enter the amount (0 or more).'); return; }
+  if (id && amount !== Number(oldAmt) && !confirm(`Change "${name}" for ${section} from ${naira(oldAmt)} to ${naira(amount)}?\n\nThis changes what every ${section} pupil owes THIS term and onward (earlier terms stay as they were).`)) return;
+  try {
+    const sort = id ? (FEE_ITEMS.find(r => r.id === id) || {}).sort : (Math.max(0, ...FEE_ITEMS.filter(r => r.section === section).map(r => r.sort || 0)) + 1);
+    const { error } = await sb.rpc('fee_item_save', { p_id: id, p_section: section, p_name: name, p_applies_to: applies, p_amount: amount, p_description: desc, p_sort: sort });
+    if (error) throw error;
+    await loadFeeItems(true);
+    if (id) { const chk = FEE_ITEMS.find(r => r.id === id); if (!chk || Number(chk.amount) !== amount) throw new Error('The database did not keep the change.'); }
+    FEE_PCT_AT = 0; FEE_BOOK = null; await syncFeeAssessments(true);
+    toast(id ? `Saved. ${name} is now ${naira(amount)} for ${section}.` : `Added ${name} to ${section}.`); renderTabAsync();
+  } catch(e) { toast('Could not save: ' + (/function .* does not exist|schema cache/i.test(e.message) ? 'run SQL file 40 first.' : e.message)); }
+}
+async function removeFeeItem(id){
+  const r = (FEE_ITEMS || []).find(x => x.id === id); if (!r) return;
+  if (!confirm(`Remove "${r.name}" (${naira(r.amount)}) from ${r.section}? Pupils will no longer be charged it from this term on.`)) return;
+  try {
+    const { error } = await sb.rpc('fee_item_remove', { p_id: id }); if (error) throw error;
+    await loadFeeItems(true); FEE_PCT_AT = 0; FEE_BOOK = null; await syncFeeAssessments(true);
+    toast('Removed.'); renderTabAsync();
+  } catch(e) { toast('Could not remove: ' + e.message); }
+}
 async function scholarshipSettingsPanel(){
   if (!canScholarships()) return '';
   const { data, error } = await sb.from('scholarships').select('*').order('sort');
@@ -4350,10 +4490,11 @@ async function scholarshipSettingsPanel(){
   const cnt = {}; (ss || []).forEach(r => { cnt[r.scholarship_id] = (cnt[r.scholarship_id] || 0) + 1; });
   return `<div class="panel">
     <h2>Scholarships</h2>
-    <div class="desc">Write what each scholarship is for, and the percentage of <strong>tuition</strong> it covers. Once a percentage is saved, any pupil given that scholarship (new enrolment or returning) automatically has that much taken off their tuition. Exam fee, PTA dues and other items are still due. Past terms are never changed.</div>
+    <div class="desc">Write what each scholarship is for, and the percentage of <strong>tuition</strong> it covers. Once a percentage is saved, any pupil given that scholarship automatically has that much taken off their tuition (unless the scholarship is set below to start only once the pupil is a returning student). Exam fee, PTA dues and other items are still due. Past terms are never changed.</div>
     ${data.map(x => `<div class="field" style="border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;">
       <label style="font-size:14px;"><strong>${esc(x.name)}</strong> <span class="desc" style="margin:0;">&middot; ${cnt[x.id] || 0} pupil(s) now on it</span></label>
       <textarea id="sch_d_${x.id}" rows="2" placeholder="Description - who qualifies and why">${esc(x.description || '')}</textarea>
+      ${x.returning_only === undefined ? '' : `<label style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;font-size:12.5px;"><input type="checkbox" id="sch_r_${x.id}" ${x.returning_only ? 'checked' : ''} style="width:auto;margin-top:3px;"><span><strong>Starts only when the pupil is a returning student.</strong> A newly enrolled pupil with this scholarship first pays the full tuition and all other charges; the discount (on tuition only) begins once the pupil's Fee Category is &ldquo;Returning Student&rdquo;.</span></label>`}
       <div class="row" style="margin-top:8px;align-items:center;">
         <label class="desc" style="margin:0;">Percentage of tuition given (0-100) <input id="sch_p_${x.id}" type="number" min="0" max="100" step="0.01" value="${x.percent ?? ''}" style="width:90px;display:inline-block;"> %</label>
         <button class="btn small" onclick="saveScholarship('${x.id}', ${cnt[x.id] || 0})">Save ${esc(x.name)}</button>
@@ -4370,6 +4511,8 @@ async function saveScholarship(id, n){
   try {
     const { data, error } = await sb.rpc('scholarship_save', { p_id: id, p_description: desc, p_percent: pct });
     if (error) throw error;
+    const rChk = document.getElementById('sch_r_' + id);
+    if (rChk) { const { error: e2 } = await sb.rpc('scholarship_set_returning_only', { p_id: id, p_value: rChk.checked }); if (e2) throw new Error(/does not exist|schema cache/i.test(e2.message) ? 'run SQL file 40 first.' : e2.message); }
     const { data: chk } = await sb.from('scholarships').select('percent,description').eq('id', id).maybeSingle();
     if (!chk || Number(chk.percent ?? -1) !== Number(pct ?? -1)) throw new Error('The database did not keep the change. Nothing was saved.');
     FEE_PCT_AT = 0; FEE_BOOK = null; await syncFeeAssessments(true);
@@ -6574,7 +6717,7 @@ async function renderStaff(){
     <div class="row between" style="margin-bottom:14px;flex-wrap:wrap;gap:8px;">
       <div class="row" style="flex-wrap:wrap;">
         ${sortSelectHtml('staff')}
-        <div class="searchbox"><span class="sic">&#128269;</span><input placeholder="Search name or ID…" value="${esc(f.q)}" oninput="staffFilter.q=this.value;renderTabAsync();" style="width:190px;"></div>
+        <div class="searchbox"><span class="sic">&#128269;</span><input placeholder="Search name or ID…" value="${esc(f.q)}" oninput="staffFilter.q=this.value;debounceRender();" style="width:190px;"></div>
         <select onchange="staffFilter.rank=this.value;renderTabAsync();"><option value="">All ranks</option><option value="none" ${f.rank==='none'?'selected':''}>No rank yet</option>${(CAREER.ranks.length?CAREER.ranks:CAREER_RANKS_FALLBACK).map(r => `<option value="${r.rank}" ${f.rank===String(r.rank)?'selected':''}>${esc(r.code)} ${esc(r.designation)}</option>`).join('')}</select>
         <select onchange="staffFilter.dept=this.value;renderTabAsync();"><option value="">All departments</option>${depts.map(d => `<option ${f.dept===d?'selected':''}>${esc(d)}</option>`).join('')}</select>
         <select onchange="staffFilter.status=this.value;renderTabAsync();">${[['active','Active'],['left','Exited'],['all','All']].map(([v,l]) => `<option value="${v}" ${f.status===v?'selected':''}>${l}</option>`).join('')}</select>
@@ -7342,7 +7485,7 @@ async function renderAuditLog(){
   return `<div class="panel">
     <div class="desc">Every change to sensitive records is captured by the database itself, so it cannot be skipped. The log cannot be edited or deleted by anyone, including administrators.</div>
     <div class="row" style="flex-wrap:wrap;margin-bottom:12px;gap:8px;">
-      <div class="searchbox"><span class="sic">&#128269;</span><input placeholder="Search who / action / reason…" value="${esc(f.q)}" oninput="auditState.q=this.value;renderTabAsync();" style="width:220px;"></div>
+      <div class="searchbox"><span class="sic">&#128269;</span><input placeholder="Search who / action / reason…" value="${esc(f.q)}" oninput="auditState.q=this.value;debounceRender();" style="width:220px;"></div>
       <select onchange="auditState.entity=this.value;renderTabAsync();"><option value="">All records</option>${entities.map(e => `<option ${f.entity === e ? 'selected' : ''}>${esc(e)}</option>`).join('')}</select>
       <select onchange="auditState.source=this.value;renderTabAsync();"><option value="">App + database</option><option value="db" ${f.source === 'db' ? 'selected' : ''}>Database (automatic)</option><option value="app" ${f.source === 'app' ? 'selected' : ''}>App notes</option></select>
       <label class="desc" style="margin:0;">From <input type="date" value="${f.from}" onchange="auditState.from=this.value;renderTabAsync();" style="width:auto;display:inline-block;"></label>
