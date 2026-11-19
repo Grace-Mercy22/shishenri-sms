@@ -414,7 +414,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r36'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r37'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -2428,6 +2428,25 @@ async function removeSubject(section, index){
   toast(`Removed "${removed}".`);
   await persistSubjects();
 }
+// A pupil is "New" only in the term he/she was enrolled. When the term changes, every pupil still marked New becomes Returning.
+// Pupils enrolled AFTER the closing term's end date are enrolling for the coming term, so they stay New.
+async function newPupilsBecomeReturning(endedOn){
+  try {
+    const { data, error } = await sb.from('students').select('id,admission_date').eq('fee_category', 'new');
+    if (error) throw error;
+    const ids = (data || []).filter(r => !endedOn || !r.admission_date || String(r.admission_date).slice(0, 10) <= String(endedOn).slice(0, 10)).map(r => r.id);
+    let done = 0;
+    for (let i = 0; i < ids.length; i += 150) {
+      const { data: u, error: e2 } = await sb.from('students').update({ fee_category: 'returning' }).in('id', ids.slice(i, i + 150)).select('id');
+      if (e2) throw e2; done += (u || []).length;
+    }
+    FEE_BOOK = null; FEE_PCT_AT = 0;
+    await logAudit('update', 'students', 'new-to-returning', { count: done, reason: 'Term changed: pupils enrolled in the ended term are now Returning' });
+    if (done) toast(`${done} new pupil(s) are now Returning pupils for ${SETTINGS_CACHE.current_term}.`);
+    if (done < ids.length) toast(`Warning: ${ids.length - done} pupil(s) could not be switched to Returning. Check their Fee Category.`);
+    if (ACCESS_MODE === 'rbac') { try { await syncFeeAssessments(true); } catch(e) {} }
+  } catch(e) { toast('Term saved, but pupils could not be switched to Returning: ' + e.message); }
+}
 async function saveTerm(){
   const val = document.getElementById('set_term').value.trim();
   if (!val) return;
@@ -2442,6 +2461,8 @@ async function saveTerm(){
   };
   if (document.getElementById('set_termstart')) payload.term_start_date = document.getElementById('set_termstart').value || null;
   if (termNumber === 3) payload.third_term_label = val; // remembered so next session's promotion knows which results to use
+  const termChanged = !!SETTINGS_CACHE.current_term && (SETTINGS_CACHE.current_term !== val || (normSession(prevSession) && normSession(prevSession) !== normSession(payload.session_label)));
+  const endedOn = SETTINGS_CACHE.term_end_date || '';   // end date of the term that is closing
   try {
     if (ACCESS_MODE === 'rbac' && SETTINGS_CACHE.current_term && (SETTINGS_CACHE.current_term !== val || (normSession(prevSession) && normSession(prevSession) !== normSession(payload.session_label)))) {
       const ok = await syncFeeAssessments(true);   // freeze what everyone owed for the term that is ending
@@ -2452,6 +2473,7 @@ async function saveTerm(){
     FEE_BOOK = null; FEE_PCT_AT = 0;
     await logAudit('update', 'settings', 'term', payload);
     toast('Term updated.');
+    if (termChanged) await newPupilsBecomeReturning(endedOn);
     // New session, First Term, and a Third Term on record that hasn't been promoted yet -> prepare promotions
     if (termNumber === 1 && payload.session_label && payload.session_label !== prevSession &&
         SETTINGS_CACHE.third_term_label && SETTINGS_CACHE.last_promoted_session !== payload.session_label) {
