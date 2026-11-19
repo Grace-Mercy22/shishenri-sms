@@ -414,7 +414,7 @@ const RECOVERY_LINK = /type=recovery/.test(location.hash + location.search);
 const LINK_ERROR = (/error_description=([^&]+)/.exec(location.hash + location.search) || [])[1] || '';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const APP_BUILD_VERSION = 'supabase-full-r37'; // bump this on every update so we can confirm a fix actually loaded
+const APP_BUILD_VERSION = 'supabase-full-r38'; // bump this on every update so we can confirm a fix actually loaded
 
 // ---------- Classes & fee structure (same as before) ----------
 const CLASSES = [
@@ -1365,7 +1365,7 @@ async function openStudentForm(existing){
       <button class="btn secondary" onclick="closeModal()">Cancel</button>
       <button class="btn" id="studentSaveBtn" onclick="saveStudent(${existing ? `'${existing.id}'` : 'null'})">Save Student</button>
     </div>
-  `);
+  `); setTimeout(refreshUniformField, 0);
 }
 function previewPhoto(inputId, imgId, placeholderId){
   const file = document.getElementById(inputId).files[0];
@@ -1538,7 +1538,7 @@ function openImportModal(){
       <button class="btn secondary" onclick="closeModal()">Cancel</button>
       <button class="btn" id="importConfirmBtn" disabled onclick="confirmImport()">Import 0 Students</button>
     </div>
-  `, true); setTimeout(refreshUniformField, 0);
+  `, true);
 }
 function matchClassId(raw){
   if (!raw) return null;
